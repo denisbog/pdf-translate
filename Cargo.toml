@@ -1,0 +1,36 @@
+[package]
+name = "pdf-translate"
+version = "0.1.0"
+edition = "2021"
+description = "Read PDFs with paragraph translations from a local model, rendered inside the document"
+publish = false
+
+[dependencies]
+pdfcraft-render = { path = "../pdfcraft/crates/render" }
+egui = "0.36"
+egui_extras = { version = "0.36", default-features = false, features = ["svg"] }
+eframe = { version = "0.36", default-features = false, features = ["default_fonts", "glow", "persistence", "accesskit", "x11", "wayland", "links"] }
+rfd = "0.17"
+ort = { version = "=2.0.0-rc.13", default-features = false, features = ["load-dynamic", "cuda", "api-17"] }
+tokenizers = "0.23.2"
+ureq = { version = "3.4.2", features = ["json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+libloading = "0.9.0"
+libc = "0.2"
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 2
+
+# The pdfcraft renderer relies on PdfCraft's vendored hayro/lopdf patches
+# (render_into, ocg_overrides, hide_comments, fuzz hardening). Mirror the parent
+# workspace's `[patch.crates-io]` so the path dependency resolves to them.
+[patch.crates-io]
+hayro-interpret = { path = "../pdfcraft/vendor/hayro-interpret" }
+hayro = { path = "../pdfcraft/vendor/hayro" }
+hayro-syntax = { path = "../pdfcraft/vendor/hayro-syntax" }
+hayro-jbig2 = { path = "../pdfcraft/vendor/hayro-jbig2" }
+lopdf = { path = "../pdfcraft/vendor/lopdf" }
