@@ -3,7 +3,8 @@
 
 use std::sync::Arc;
 
-use egui::{Color32, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Stroke, Visuals};
+use egui::{Color32, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, FontTweak, Stroke, Visuals};
+use epaint::text::VariationCoords;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum ThemeKind {
@@ -152,17 +153,24 @@ pub fn install_fonts(ctx: &egui::Context) {
 
 pub fn font_definitions() -> FontDefinitions {
     let mut fonts = FontDefinitions::default();
-    let add = |fonts: &mut FontDefinitions, name: &str, bytes: &'static [u8]| {
-        fonts.font_data.insert(name.to_owned(), Arc::new(FontData::from_static(bytes)));
+    // The interface faces come from the `damascene-fonts-*` crates: the upstream variable
+    // fonts (Inter and JetBrains Mono, OFL), registered once per weight through the `wght`
+    // axis, so nothing has to be copied out of another checkout.
+    let add = |fonts: &mut FontDefinitions, name: &str, bytes: &'static [u8], weight: Option<f32>| {
+        let mut data = FontData::from_static(bytes);
+        if let Some(weight) = weight {
+            data = data.tweak(FontTweak { coords: VariationCoords::new([(*b"wght", weight)]), ..Default::default() });
+        }
+        fonts.font_data.insert(name.to_owned(), Arc::new(data));
     };
-    add(&mut fonts, "Inter", include_bytes!("../../pdfcraft/assets/fonts/Inter-Regular.ttf"));
-    add(&mut fonts, "Inter-Medium", include_bytes!("../../pdfcraft/assets/fonts/Inter-Medium.ttf"));
-    add(&mut fonts, "Inter-SemiBold", include_bytes!("../../pdfcraft/assets/fonts/Inter-SemiBold.ttf"));
-    add(&mut fonts, "JetBrainsMono", include_bytes!("../../pdfcraft/assets/fonts/JetBrainsMono-Regular.ttf"));
+    add(&mut fonts, "Inter", damascene_fonts_inter::INTER_VARIABLE, Some(400.0));
+    add(&mut fonts, "Inter-Medium", damascene_fonts_inter::INTER_VARIABLE, Some(500.0));
+    add(&mut fonts, "Inter-SemiBold", damascene_fonts_inter::INTER_VARIABLE, Some(600.0));
+    add(&mut fonts, "JetBrainsMono", damascene_fonts_jetbrains_mono::JETBRAINS_MONO_VARIABLE, Some(400.0));
     // The document serif: translations are set in it so they read like the page they translate.
-    add(&mut fonts, "SourceSerif", include_bytes!("../assets/fonts/SourceSerifPro-Regular.otf"));
-    add(&mut fonts, "SourceSerif-Bold", include_bytes!("../assets/fonts/SourceSerifPro-Bold.otf"));
-    add(&mut fonts, "SourceSerif-Italic", include_bytes!("../assets/fonts/SourceSerifPro-It.otf"));
+    add(&mut fonts, "SourceSerif", include_bytes!("../assets/fonts/SourceSerifPro-Regular.otf"), None);
+    add(&mut fonts, "SourceSerif-Bold", include_bytes!("../assets/fonts/SourceSerifPro-Bold.otf"), None);
+    add(&mut fonts, "SourceSerif-Italic", include_bytes!("../assets/fonts/SourceSerifPro-It.otf"), None);
     fonts.families.entry(FontFamily::Proportional).or_default().insert(0, "Inter".to_owned());
     fonts.families.entry(FontFamily::Monospace).or_default().insert(0, "JetBrainsMono".to_owned());
     let fallback: Vec<String> = fonts.families[&FontFamily::Proportional].clone();

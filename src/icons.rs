@@ -1,40 +1,45 @@
-//! Vector icons: the Lucide SVGs PdfCraft uses, recoloured and rasterized by `egui_extras`.
-//! The files are read from the PdfCraft checkout (`assets/icons`, ISC licence).
+//! Vector icons: the official Lucide SVGs, embedded from the `lucide-static-svg` crate
+//! (Lucide is ISC-licensed), recoloured and rasterized by `egui_extras`.
 
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
 use egui::{Color32, Rect, Response, Sense, Vec2};
+use lucide_static_svg::Icon;
 
 use crate::theme::Tokens;
 
-static ICONS: &[(&str, &[u8])] = &[
-    ("house", include_bytes!("../../pdfcraft/assets/icons/house.svg")),
-    ("file-text", include_bytes!("../../pdfcraft/assets/icons/file-text.svg")),
-    ("x", include_bytes!("../../pdfcraft/assets/icons/x.svg")),
-    ("plus", include_bytes!("../../pdfcraft/assets/icons/plus.svg")),
-    ("sun", include_bytes!("../../pdfcraft/assets/icons/sun.svg")),
-    ("moon", include_bytes!("../../pdfcraft/assets/icons/moon.svg")),
-    ("settings", include_bytes!("../../pdfcraft/assets/icons/settings.svg")),
-    ("circle-help", include_bytes!("../../pdfcraft/assets/icons/circle-help.svg")),
-    ("panel-left", include_bytes!("../../pdfcraft/assets/icons/panel-left.svg")),
-    ("search", include_bytes!("../../pdfcraft/assets/icons/search.svg")),
-    ("hand", include_bytes!("../../pdfcraft/assets/icons/hand.svg")),
-    ("zoom-in", include_bytes!("../../pdfcraft/assets/icons/zoom-in.svg")),
-    ("zoom-out", include_bytes!("../../pdfcraft/assets/icons/zoom-out.svg")),
-    ("maximize", include_bytes!("../../pdfcraft/assets/icons/maximize.svg")),
-    ("gauge", include_bytes!("../../pdfcraft/assets/icons/gauge.svg")),
-    ("list", include_bytes!("../../pdfcraft/assets/icons/list.svg")),
-    ("languages", include_bytes!("../../pdfcraft/assets/icons/languages.svg")),
-    ("square-terminal", include_bytes!("../../pdfcraft/assets/icons/square-terminal.svg")),
-    ("info", include_bytes!("../../pdfcraft/assets/icons/info.svg")),
-    ("check", include_bytes!("../../pdfcraft/assets/icons/check.svg")),
-    ("book-open", include_bytes!("../../pdfcraft/assets/icons/book-open.svg")),
-    ("chevron-up", include_bytes!("../../pdfcraft/assets/icons/chevron-up.svg")),
-    ("chevron-down", include_bytes!("../../pdfcraft/assets/icons/chevron-down.svg")),
-    ("message-square", include_bytes!("../../pdfcraft/assets/icons/message-square.svg")),
-    ("external-link", include_bytes!("../../pdfcraft/assets/icons/external-link.svg")),
-    ("trash-2", include_bytes!("../../pdfcraft/assets/icons/trash-2.svg")),
+/// The icons the chrome uses, under the names the rest of the app asks for them by.
+static ICONS: &[(&str, Icon)] = &[
+    ("house", Icon::House),
+    ("file-text", Icon::FileText),
+    ("x", Icon::X),
+    ("plus", Icon::Plus),
+    ("sun", Icon::Sun),
+    ("moon", Icon::Moon),
+    ("settings", Icon::Settings),
+    // Lucide renamed these two ("help-circle" → "circle-question-mark", "trash-2" → "trash");
+    // the UI keeps its shorter names.
+    ("circle-help", Icon::CircleQuestionMark),
+    ("panel-left", Icon::PanelLeft),
+    ("search", Icon::Search),
+    ("hand", Icon::Hand),
+    ("zoom-in", Icon::ZoomIn),
+    ("zoom-out", Icon::ZoomOut),
+    ("maximize", Icon::Maximize),
+    ("gauge", Icon::Gauge),
+    ("square", Icon::Square),
+    ("list", Icon::List),
+    ("languages", Icon::Languages),
+    ("square-terminal", Icon::SquareTerminal),
+    ("info", Icon::Info),
+    ("check", Icon::Check),
+    ("book-open", Icon::BookOpen),
+    ("chevron-up", Icon::ChevronUp),
+    ("chevron-down", Icon::ChevronDown),
+    ("message-square", Icon::MessageSquare),
+    ("external-link", Icon::ExternalLink),
+    ("trash-2", Icon::Trash),
 ];
 
 fn white_icons() -> &'static HashMap<&'static str, Arc<[u8]>> {
@@ -42,18 +47,22 @@ fn white_icons() -> &'static HashMap<&'static str, Arc<[u8]>> {
     MAP.get_or_init(|| {
         ICONS
             .iter()
-            .map(|(name, bytes)| {
-                let svg = String::from_utf8_lossy(bytes).replace("currentColor", "#ffffff").replace("stroke-width=\"2\"", "stroke-width=\"1.75\"");
+            .map(|(name, icon)| {
+                // egui rasters the SVG at the tint's colour, so the stroke colour is patched
+                // here, and the stroke is a touch lighter than Lucide's default.
+                let svg = icon.svg_str().replace("currentColor", "#ffffff").replace("stroke-width=\"2\"", "stroke-width=\"1.75\"");
                 (*name, Arc::from(svg.into_bytes().into_boxed_slice()))
             })
             .collect()
     })
 }
 
+
 pub fn image(name: &str, size: f32, tint: Color32) -> egui::Image<'static> {
+    // An unknown name draws the empty square, so a missing icon is visible but harmless.
     let (key, bytes) = match white_icons().get(name) {
         Some(bytes) => (name, bytes.clone()),
-        None => ("square", white_icons().get("check").cloned().unwrap_or_default()),
+        None => ("square", white_icons().get("square").cloned().unwrap_or_default()),
     };
     egui::Image::from_bytes(format!("bytes://icons/{key}.svg"), egui::load::Bytes::Shared(bytes)).fit_to_exact_size(Vec2::splat(size)).tint(tint)
 }

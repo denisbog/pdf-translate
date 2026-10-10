@@ -66,9 +66,10 @@ Inter typeface and Lucide icons — is PdfCraft's (`crates/ui-egui/src/theme.rs`
 
 * Rust (edition 2021). The dependency uses PdfCraft, which needs a recent
   toolchain (it is built with the workspace's `rust-version = 1.90`).
-* A local checkout of PdfCraft. The build expects it at **`~/llm/pdfcraft`**
-  (the `path` in `Cargo.toml`). PdfCraft's `[patch.crates-io]` for hayro/lopdf is
-  mirrored here, because `pdfcraft-render` relies on those patches.
+* A local checkout of PdfCraft, **for the renderer only**. The build expects it at
+  **`~/llm/pdfcraft`** (the `path` in `Cargo.toml`). PdfCraft's `[patch.crates-io]` for
+  hayro/lopdf is mirrored here, because `pdfcraft-render` relies on those patches. The
+  icons and the interface fonts come from crates, so no asset is copied out of it.
 * ONNX Runtime with the CUDA provider. On this machine the copy bundled with
   sherpa-onnx is used (`~/sherpa-onnx/.../lib/libonnxruntime.so`); it is found
   automatically. Override with `PDF_TRANSLATE_ORT_DIR`.
@@ -165,7 +166,7 @@ ten seconds while the app runs.
 | `src/main.rs` | entry point and the debug CLI |
 | `src/app.rs` | the reader: chrome, document tabs, page stack, hover, translation cards, panels, session |
 | `src/theme.rs` | PdfCraft's design tokens, egui style and fonts |
-| `src/icons.rs` | PdfCraft's Lucide SVGs, tinted icon buttons |
+| `src/icons.rs` | the Lucide SVG icons, tinted icon buttons |
 | `src/widgets.rs` | mode tabs, ghost buttons, pills, search box, section titles |
 | `src/render.rs` | background page renderer (PdfCraft's `RenderPool`, most urgent page first) |
 | `src/paragraphs.rs` | reading-order lines → columns → paragraphs, content keys |
@@ -174,10 +175,13 @@ ten seconds while the app runs.
 | `src/llm.rs` | local Qwen2.5 ONNX decoder (KV-cache loop) — adapted from `transcribe` |
 | `tools/xctl.py` | tiny X11 helper used to script hover/click during development |
 
-The interface icons are PdfCraft's Lucide SVGs (ISC) read from the PdfCraft checkout;
-the interface typefaces are PdfCraft's Inter and JetBrains Mono (OFL), and the document
-text is set in Source Serif Pro (OFL, `assets/fonts`); the theme tokens, widget metrics
-and chrome layout are copied from `crates/ui-egui`.
+The interface icons are the official Lucide SVGs, embedded from the `lucide-static-svg`
+crate (ISC), and the interface typefaces are Inter and JetBrains Mono, embedded from the
+`damascene-fonts-inter` / `damascene-fonts-jetbrains-mono` crates (OFL) — one file per
+family, registered once per weight through the variable fonts' `wght` axis. The document
+text is set in Source Serif Pro (OFL, `assets/fonts`). Nothing is read out of a PdfCraft
+checkout any more; the theme tokens, widget metrics and chrome layout follow
+`crates/ui-egui`.
 
 Rendering and text extraction both go through PdfCraft's
 `pdfcraft_render::RenderPool`; a request for `RequestKind::Pixels` produces the
