@@ -1843,11 +1843,13 @@ dependencies = [
 [[package]]
 name = "hayro"
 version = "0.7.1"
+source = "git+https://github.com/storytold/pdfcraft?tag=v0.5.0#ef9b553f5505bcd4954ba01d6a896ea2a37efe06"
 dependencies = [
  "bytemuck",
  "hayro-interpret",
  "image",
  "kurbo 0.13.1",
+ "log",
  "pic-scale",
  "vello_cpu 0.0.8",
 ]
@@ -1871,6 +1873,7 @@ dependencies = [
 [[package]]
 name = "hayro-interpret"
 version = "0.7.0"
+source = "git+https://github.com/storytold/pdfcraft?tag=v0.5.0#ef9b553f5505bcd4954ba01d6a896ea2a37efe06"
 dependencies = [
  "bitflags 2.13.2",
  "hayro-cmap",
@@ -1888,6 +1891,7 @@ dependencies = [
 [[package]]
 name = "hayro-jbig2"
 version = "0.3.0"
+source = "git+https://github.com/storytold/pdfcraft?tag=v0.5.0#ef9b553f5505bcd4954ba01d6a896ea2a37efe06"
 dependencies = [
  "fearless_simd",
  "hayro-ccitt",
@@ -1911,6 +1915,7 @@ checksum = "885c5ef0654933139a9b9546fc2c69e18d37f38aa2520f079092b1be18f1fcaa"
 [[package]]
 name = "hayro-syntax"
 version = "0.7.2"
+source = "git+https://github.com/storytold/pdfcraft?tag=v0.5.0#ef9b553f5505bcd4954ba01d6a896ea2a37efe06"
 dependencies = [
  "flate2",
  "hayro-ccitt",
@@ -2370,6 +2375,7 @@ checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 [[package]]
 name = "lopdf"
 version = "0.45.0"
+source = "git+https://github.com/storytold/pdfcraft?tag=v0.5.0#ef9b553f5505bcd4954ba01d6a896ea2a37efe06"
 dependencies = [
  "aes",
  "bitflags 2.13.2",
@@ -3104,7 +3110,8 @@ dependencies = [
 
 [[package]]
 name = "pdfcraft-cos"
-version = "0.4.0"
+version = "0.5.0"
+source = "git+https://github.com/storytold/pdfcraft?tag=v0.5.0#ef9b553f5505bcd4954ba01d6a896ea2a37efe06"
 dependencies = [
  "pdfcraft-crypt",
  "pdfcraft-filters",
@@ -3113,7 +3120,8 @@ dependencies = [
 
 [[package]]
 name = "pdfcraft-crypt"
-version = "0.4.0"
+version = "0.5.0"
+source = "git+https://github.com/storytold/pdfcraft?tag=v0.5.0#ef9b553f5505bcd4954ba01d6a896ea2a37efe06"
 dependencies = [
  "aes",
  "md-5",
@@ -3124,7 +3132,8 @@ dependencies = [
 
 [[package]]
 name = "pdfcraft-filters"
-version = "0.4.0"
+version = "0.5.0"
+source = "git+https://github.com/storytold/pdfcraft?tag=v0.5.0#ef9b553f5505bcd4954ba01d6a896ea2a37efe06"
 dependencies = [
  "flate2",
  "thiserror 2.0.21",
@@ -3132,7 +3141,8 @@ dependencies = [
 
 [[package]]
 name = "pdfcraft-fonts"
-version = "0.4.0"
+version = "0.5.0"
+source = "git+https://github.com/storytold/pdfcraft?tag=v0.5.0#ef9b553f5505bcd4954ba01d6a896ea2a37efe06"
 dependencies = [
  "harfrust",
  "pdfcraft-cos",
@@ -3141,7 +3151,8 @@ dependencies = [
 
 [[package]]
 name = "pdfcraft-render"
-version = "0.4.0"
+version = "0.5.0"
+source = "git+https://github.com/storytold/pdfcraft?tag=v0.5.0#ef9b553f5505bcd4954ba01d6a896ea2a37efe06"
 dependencies = [
  "bytemuck",
  "getrandom 0.4.3",
@@ -3150,6 +3161,7 @@ dependencies = [
  "kurbo 0.13.1",
  "log",
  "lopdf",
+ "pdfcraft-cos",
  "pdfcraft-fonts",
  "thiserror 2.0.21",
 ]

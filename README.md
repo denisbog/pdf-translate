@@ -66,10 +66,12 @@ Inter typeface and Lucide icons — is PdfCraft's (`crates/ui-egui/src/theme.rs`
 
 * Rust (edition 2021). The dependency uses PdfCraft, which needs a recent
   toolchain (it is built with the workspace's `rust-version = 1.90`).
-* A local checkout of PdfCraft, **for the renderer only**. The build expects it at
-  **`~/llm/pdfcraft`** (the `path` in `Cargo.toml`). PdfCraft's `[patch.crates-io]` for
-  hayro/lopdf is mirrored here, because `pdfcraft-render` relies on those patches. The
-  icons and the interface fonts come from crates, so no asset is copied out of it.
+* No checkout of PdfCraft is needed: the renderer is its repository pinned to the
+  **`v0.5.0`** tag. Cargo fetches `pdfcraft-render` from there, and the five forked
+  `hayro`/`lopdf` crates it is built against (from that repository's `vendor/`, which
+  keeps PdfCraft's fixes and fuzz hardening) come from the same tag through
+  `[patch.crates-io]`. The first build needs the network; afterwards they are cached in
+  `~/.cargo`. PdfCraft is MIT OR Apache-2.0.
 * ONNX Runtime with the CUDA provider. On this machine the copy bundled with
   sherpa-onnx is used (`~/sherpa-onnx/.../lib/libonnxruntime.so`); it is found
   automatically. Override with `PDF_TRANSLATE_ORT_DIR`.
