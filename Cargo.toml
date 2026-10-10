@@ -2,13 +2,16 @@
 name = "pdf-translate"
 version = "0.1.0"
 edition = "2021"
-# The renderer is PdfCraft v0.5.0, whose workspace is rust-version 1.90.
-rust-version = "1.90"
+# The renderer is the `hayro` crate (hayro-interpret + vello_cpu), whose rust-version is 1.92.
+rust-version = "1.92"
 description = "Read PDFs with paragraph translations from a local model, rendered inside the document"
 publish = false
 
 [dependencies]
-pdfcraft-render = { git = "https://github.com/storytold/pdfcraft", tag = "v0.5.0", package = "pdfcraft-render" }
+# The page rasterizer and text interpreter, used directly (no PdfCraft wrapper).
+hayro = "0.7.1"
+# The geometry types hayro's `Device` trait uses, for text extraction.
+kurbo = "0.13"
 egui = "0.36"
 # `epaint` is egui's own paint/text crate: only `text::VariationCoords` is used here, to pick
 # a `wght` instance of the variable UI fonts.
@@ -35,14 +38,3 @@ opt-level = 1
 [profile.dev.package."*"]
 opt-level = 2
 
-# The renderer is PdfCraft's, taken from its repository at the v0.5.0 tag: `pdfcraft-render`
-# is a crate of that workspace, and the crates below are the forked hayro/lopdf it is built
-# against (from the repository's `vendor/`, which keeps PdfCraft's fixes: render_into,
-# ocg_overrides, hide_comments, cancellation and the fuzz hardening). Pinning a tag keeps
-# the build reproducible; bump it when PdfCraft tags a new release.
-[patch.crates-io]
-hayro-interpret = { git = "https://github.com/storytold/pdfcraft", tag = "v0.5.0", package = "hayro-interpret" }
-hayro = { git = "https://github.com/storytold/pdfcraft", tag = "v0.5.0", package = "hayro" }
-hayro-syntax = { git = "https://github.com/storytold/pdfcraft", tag = "v0.5.0", package = "hayro-syntax" }
-hayro-jbig2 = { git = "https://github.com/storytold/pdfcraft", tag = "v0.5.0", package = "hayro-jbig2" }
-lopdf = { git = "https://github.com/storytold/pdfcraft", tag = "v0.5.0", package = "lopdf" }

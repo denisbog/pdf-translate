@@ -9,7 +9,7 @@ use egui::text::{LayoutJob, TextFormat};
 use egui::{
     Align, Align2, Color32, CornerRadius, Frame, Id, Layout, Margin, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, UiBuilder, Vec2, vec2,
 };
-use pdfcraft_render::{inspect, DocInfo, OutlineItem, RenderConfig};
+use crate::pdf::{inspect, DocInfo, OutlineItem, RenderConfig};
 
 use crate::icons;
 use crate::paragraphs::Paragraph;

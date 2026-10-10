@@ -1,6 +1,6 @@
 //! Background page renderer.
 //!
-//! Pages are rendered by PdfCraft's [`RenderPool`]: several worker threads over the
+//! Pages are rendered by the pool in [`crate::pdf`]: several worker threads over the
 //! shared document, each request answered once, the most urgent first. The UI rebuilds
 //! the pool's queue each frame from the pages it still needs, so a page scrolled away —
 //! or a raster at an old zoom — is dropped instead of being rendered. (A single worker
@@ -10,7 +10,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use pdfcraft_render::{RenderConfig, RenderPool, RenderRequest, RenderedPage, RequestKind};
+use crate::pdf::{RenderConfig, RenderPool, RenderRequest, RenderedPage, RequestKind};
 
 use crate::paragraphs::{self, Paragraph};
 

@@ -1,8 +1,8 @@
 //! PDF Translate — read a PDF and see each paragraph's translation from a local model,
 //! rendered beside the paragraph it belongs to.
 //!
-//! Pages are rasterised and their text layer extracted by `pdfcraft-render` (the renderer
-//! of [PdfCraft](https://github.com/storytold/pdfcraft)); paragraphs are grouped from the
+//! Pages are rasterised and their text layer extracted by the
+//! [`hayro`](https://github.com/LaurenzV/hayro) crate; paragraphs are grouped from the
 //! reading-order text; translations come from a local Qwen2.5 ONNX model running in-process
 //! through ONNX Runtime, the same setup the transcribe project uses.
 //!
@@ -14,6 +14,7 @@ mod app;
 mod icons;
 mod llm;
 mod paragraphs;
+mod pdf;
 mod render;
 mod store;
 mod theme;
@@ -22,7 +23,7 @@ mod widgets;
 
 use std::sync::Arc;
 
-use pdfcraft_render::{PageRenderer, RenderConfig, RenderRequest, RequestKind};
+use crate::pdf::{PageRenderer, RenderConfig, RenderRequest, RequestKind};
 
 fn main() -> eframe::Result<()> {
     let args: Vec<String> = std::env::args().collect();

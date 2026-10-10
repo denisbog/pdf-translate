@@ -1,7 +1,7 @@
 # PDF Translate
 
-A native PDF reader built on the renderer of
-[PdfCraft](https://github.com/storytold/pdfcraft). Hover a paragraph and its
+A native PDF reader built on the [`hayro`](https://github.com/LaurenzV/hayro)
+renderer. Hover a paragraph and its
 translation appears *inside the document*, next to the paragraph, set in the same
 format as the paragraph it belongs to. Translations come from a local Qwen2.5 ONNX
 model running in-process through ONNX Runtime — the same setup as
@@ -12,7 +12,7 @@ model running in-process through ONNX Runtime — the same setup as
 ├ mode bar ── Menu │ Read · Outline · Translations · Log ── search, language, │
 │             model, zoom                                                   │
 │ ┌──┐┌─ page raster ─┐                              ┌─ translation card ─┐ │
-│ │  ││  (pdfcraft)   │  ◀── hover a paragraph ──▶   │ same type size and │ │
+│ │  ││   (hayro)     │  ◀── hover a paragraph ──▶   │ same type size and │ │
 │ │▐▌││               │   (blue highlight, mark)     │ leading, left or   │ │
 │ │  │└───────────────┘                              │ right of the page  │ │
 │ └──┘┌ rail ───────────────────────────────────────  └────────────────────┘ │
@@ -26,7 +26,7 @@ Inter typeface and Lucide icons — is PdfCraft's (`crates/ui-egui/src/theme.rs`
 ## What it does
 
 * **Reads PDFs natively** — pages are rasterised and their text layer extracted by
-  `pdfcraft-render` (hayro + vello_cpu, with PdfCraft's vendored patches), so text
+  the `hayro` crate (hayro-interpret + vello_cpu), so text
   is available in reading order (columns, RTL and vertical CJK included).
 * **Paragraphs, not pages** — the text layer is grouped into paragraphs by type size,
   leading, indentation and short last lines. A bold run-in heading and a line wrapped
@@ -64,14 +64,12 @@ Inter typeface and Lucide icons — is PdfCraft's (`crates/ui-egui/src/theme.rs`
 
 ## Requirements
 
-* Rust (edition 2021). The dependency uses PdfCraft, which needs a recent
-  toolchain (it is built with the workspace's `rust-version = 1.90`).
-* No checkout of PdfCraft is needed: the renderer is its repository pinned to the
-  **`v0.5.0`** tag. Cargo fetches `pdfcraft-render` from there, and the five forked
-  `hayro`/`lopdf` crates it is built against (from that repository's `vendor/`, which
-  keeps PdfCraft's fixes and fuzz hardening) come from the same tag through
-  `[patch.crates-io]`. The first build needs the network; afterwards they are cached in
-  `~/.cargo`. PdfCraft is MIT OR Apache-2.0.
+* Rust (edition 2021) with a toolchain at least `1.92` (the `hayro` crate's
+  `rust-version`) — the package declares `rust-version = "1.92"`.
+* No PdfCraft checkout or fork: rendering and text extraction use the published
+  `hayro` crate, and the geometry types its `Device` trait uses come from `kurbo`.
+  Both are fetched from crates.io and cached under `~/.cargo` after the first
+  build. `hayro` is MIT OR Apache-2.0.
 * ONNX Runtime with the CUDA provider. On this machine the copy bundled with
   sherpa-onnx is used (`~/sherpa-onnx/.../lib/libonnxruntime.so`); it is found
   automatically. Override with `PDF_TRANSLATE_ORT_DIR`.
@@ -170,7 +168,8 @@ ten seconds while the app runs.
 | `src/theme.rs` | PdfCraft's design tokens, egui style and fonts |
 | `src/icons.rs` | the Lucide SVG icons, tinted icon buttons |
 | `src/widgets.rs` | mode tabs, ghost buttons, pills, search box, section titles |
-| `src/render.rs` | background page renderer (PdfCraft's `RenderPool`, most urgent page first) |
+| `src/render.rs` | background page renderer (the `crate::pdf` pool, most urgent page first) |
+| `src/pdf/` | the hayro backend: render pool, glyph/text extraction, document inspection |
 | `src/paragraphs.rs` | reading-order lines → columns → paragraphs, content keys |
 | `src/typeface.rs` | the document's body family (serif/sans/mono) from its font names |
 | `src/store.rs` | translation cache + background translation worker |
@@ -185,8 +184,8 @@ text is set in Source Serif Pro (OFL, `assets/fonts`). Nothing is read out of a 
 checkout any more; the theme tokens, widget metrics and chrome layout follow
 `crates/ui-egui`.
 
-Rendering and text extraction both go through PdfCraft's
-`pdfcraft_render::RenderPool`; a request for `RequestKind::Pixels` produces the
+Rendering and text extraction both go through `crate::pdf::RenderPool`; a request for
+`RequestKind::Pixels` produces the
 page texture, `RequestKind::Text` the `PageText` the paragraphs are grouped from.
 The pool renders on several threads (one per core, up to seven) and the UI rebuilds
 its queue every frame from the pages still on screen, most urgent first, so a page

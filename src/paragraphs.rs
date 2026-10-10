@@ -1,12 +1,12 @@
 //! Reading-order paragraphs taken from a page's text layer.
 //!
-//! `pdfcraft_render` already groups glyphs into lines in reading order (columns are
+//! The text layer (`crate::pdf::text`) already groups glyphs into lines in reading order (columns are
 //! handled for us). A paragraph is a run of consecutive lines that belong together:
 //! same type size, normal leading, and no indentation change. The paragraph keeps its
 //! box in page view space (points, y down), its type size and its line spacing, so the
 //! translation can be shown in the paragraph's own format.
 
-use pdfcraft_render::PageText;
+use crate::pdf::PageText;
 
 /// One line of a paragraph: its text and its box in view space.
 #[derive(Clone, Debug)]
@@ -59,7 +59,7 @@ pub fn content_key(text: &str) -> String {
 
 /// Lines of the page with their text and boxes.
 ///
-/// `pdfcraft` folds glyphs into lines, but on a page with several columns it can fold two
+/// The text layer folds glyphs into lines, but on a page with several columns it can fold two
 /// columns into one line when the gutter is narrow. Each line is therefore split again at
 /// gaps too wide to be a word space (a column gutter), and at jumps back to the left (the
 /// next column of a folded line).
@@ -88,7 +88,7 @@ fn push_line_pieces(page: &PageText, start: usize, end: usize, out: &mut Vec<Lin
         let height = (previous.rect[3] - previous.rect[1]).max(glyph.rect[3] - glyph.rect[1]).max(0.1);
         let gap = glyph.rect[0] - previous.rect[2];
         // A wide forward gap is a gutter between columns; a large jump backwards is the
-        // next column of a line pdfcraft folded together (RTL advances are far smaller).
+        // next column of a line the layout folded together (RTL advances are far smaller).
         let gutter = gap > (height * 0.8).max(4.5);
         let jump_back = previous.rect[0] - glyph.rect[0] > height * 3.0;
         if gutter || jump_back {
@@ -408,7 +408,7 @@ fn center_y(line: &Line) -> f32 {
     (line.rect[1] + line.rect[3]) / 2.0
 }
 
-/// Reading order for a page's lines. `pdfcraft` groups glyphs into lines but, on a page
+/// Reading order for a page's lines. The text layer groups glyphs into lines but, on a page
 /// whose columns were folded into one block, it emits them baseline by baseline (left,
 /// right, left, right…), which would fuse two columns into a single paragraph.
 ///

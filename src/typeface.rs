@@ -4,7 +4,7 @@
 //! from those names: a body face that names a serif makes the document serif, and so on.
 //! Translations are then set in the matching face, so a card reads like the page it belongs to.
 
-use pdfcraft_render::FontInfo;
+use crate::pdf::FontInfo;
 
 /// The typographic family the document's body text uses.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
