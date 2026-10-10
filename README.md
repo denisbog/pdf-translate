@@ -40,20 +40,25 @@ Inter typeface and Lucide icons — is PdfCraft's (`crates/ui-egui/src/theme.rs`
 * **Marked when translated** — a translated paragraph carries an accent bar in the
   margin, so you can see at a glance what is already done.
 * **PdfCraft's chrome** — tab strip, mode bar, tool rails and a pasteboard with white,
-  shadowed pages; light, dark or system theme; and a command palette on ⌘K. The right
+  shadowed pages; light, dark or system theme; and a command palette on Ctrl+K. The right
   rail opens a panel: **Outline** (click a bookmark to jump), **Translations** and
   **Log**. The Translations panel reads in document order: each paragraph's translation
   is set in the document's own face at page size, the source quoted below it in small
   type, and entries on the same page share one page heading. A row highlights under the
   pointer and a click jumps to its page; the filter narrows the list.
+* **Several documents** — each PDF opens in its own tab (name a file per argument, or
+  use **Open…**); the tabs switch with a click or Ctrl+Tab, close with the `x` or
+  Ctrl+W, and every one keeps its own place. The documents open at exit, and the page
+  each was on, are restored the next time the app starts.
 * **Request one paragraph** — click a paragraph (or the *Translate this paragraph*
   button on its card) to translate just that one. Nothing is translated until you
   ask.
 * **Live stage** — while a request runs, a small animated chip next to the
   paragraph says what is happening: `queued`, `loading the model…`, `translating…`.
   The same stage is shown inside the card.
-* **Close a translation** — the `x` on the card hides it for that paragraph;
-  hovering stays quiet until you click the paragraph again.
+* **The card keeps the paragraph's measure** — its text column is exactly as wide as the
+  paragraph it translates (the popup adds only its own padding around it), and it closes
+  as soon as the pointer leaves it.
 * **Cache** — every translation is written to disk and reused; opening the same
   PDF again (or another reader) never asks the model twice.
 
@@ -76,19 +81,23 @@ Inter typeface and Lucide icons — is PdfCraft's (`crates/ui-egui/src/theme.rs`
 
 ```bash
 cd ~/llm/pdf-translate
-cargo run --release -- "/path/to/document.pdf"
+cargo run --release -- "/path/to/document.pdf" "/path/to/another.pdf"
 ```
 
-Without a file argument, **Open…** (or ⌘/Ctrl+O) picks a PDF.
+Open one or more PDFs on the command line; without a file argument the documents of
+the last session are reopened, and **Open…** (or Ctrl+O) picks another.
 
-**Chrome.** The tab strip holds the document tab; the mode bar has the **Menu**,
-the panel tabs (*Read · Outline · Translations · Log*) and, on the right, the target
-language, the model and the zoom control. The left rail holds the reading tools (zoom,
-fit to width, actual size), the right rail the panel toggles, the theme and help.
-The theme follows **Light gray / Dark gray / Use system setting** (the button in the
-tab strip); ⌘K opens the command palette.
+**Chrome.** The tab strip holds one tab per open document (click to switch, `x` or
+Ctrl+W to close); the mode bar has the **Menu**, the panel tabs (*Read · Outline ·
+Translations · Log*) and, on the right, the target language, the model and the zoom
+control. The left rail holds the reading tools (zoom, fit to width, actual size) and,
+at the bottom, PdfCraft's page controller: the page box (type a number and press
+Enter), the page count, and a button for the previous and the next page — which move a
+whole spread in two-page view. The right rail holds the panel toggles, the theme and
+help. The **theme button** in the tab strip switches between light and dark gray on a
+click; *Use system setting* is still offered by the command palette (Ctrl+K).
 
-**Zoom.** The zoom control is PdfCraft's: **⌘/Ctrl + wheel** (or a pinch) zooms
+**Zoom.** The zoom control is PdfCraft's: **Ctrl + wheel** (or a pinch) zooms
 continuously around the point under the pointer, the rail's zoom buttons and the
 percentage open a menu that steps through the same levels as PdfCraft's zoom menu
 (25 … 600%, *Actual size*, *Fit to width*). A zoom keeps the page in view where it
@@ -98,8 +107,10 @@ page never jumps. When the band is wide enough for two pages — and always at
 out as a spread, two side by side, as PdfCraft's two-page view does; zooming in
 past that falls back to one page filling the width.
 
-Shortcuts: ⌘O open · ⌘K palette · ⌘+ / ⌘− zoom · ⌘0 actual size · ⌘2 fit to width ·
-Ctrl/⌘ + wheel zoom · Esc close the palette.
+Shortcuts: Ctrl+O open · Ctrl+W close the tab · Ctrl+Tab / Ctrl+Shift+Tab next /
+previous tab · Ctrl+K palette · Ctrl++ / Ctrl+− zoom · Ctrl+0 actual size · Ctrl+2 fit
+to width · Ctrl + wheel zoom · Page Down / Page Up next / previous page · Home / End
+first / last page · Esc close the palette.
 
 ### Debug helpers (no UI)
 
@@ -143,12 +154,16 @@ paragraph keeps its translation even if the document is re-opened or the paragra
 grouping shifts slightly. The file name pins the document's canonical path, size
 and mtime, so replacing the PDF starts a fresh cache.
 
+The session — the documents open at exit and the page each was on — is kept with the
+app's settings in eframe's storage (`~/.local/share/pdftranslate/app.ron`), and every
+ten seconds while the app runs.
+
 ## How it is built
 
 | file | role |
 | --- | --- |
 | `src/main.rs` | entry point and the debug CLI |
-| `src/app.rs` | the reader: chrome, page stack, hover, translation cards, panels |
+| `src/app.rs` | the reader: chrome, document tabs, page stack, hover, translation cards, panels, session |
 | `src/theme.rs` | PdfCraft's design tokens, egui style and fonts |
 | `src/icons.rs` | PdfCraft's Lucide SVGs, tinted icon buttons |
 | `src/widgets.rs` | mode tabs, ghost buttons, pills, search box, section titles |

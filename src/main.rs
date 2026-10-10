@@ -32,7 +32,7 @@ fn main() -> eframe::Result<()> {
         Some("--check") => return check_cli(&args),
         Some("--translate") => return translate_cli(&args),
         Some("--help" | "-h") => {
-            println!("pdf-translate [file.pdf]\n\n  --paragraphs <file.pdf> [page]                     list detected paragraphs\n  --translate  <file.pdf> <page> <n> [target] [model] translate one paragraph");
+            println!("pdf-translate [file.pdf …]\n\n  --paragraphs <file.pdf> [page]                     list detected paragraphs\n  --translate  <file.pdf> <page> <n> [target] [model] translate one paragraph");
             return Ok(());
         }
         _ => {}

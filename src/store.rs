@@ -36,8 +36,13 @@ impl Stage {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Job {
+    /// The document the paragraph belongs to, as its tab id.
+    pub doc: u64,
+    /// That document's cache: the entry is written here when the translation is ready, and
+    /// checked here first, so one worker serves every open document.
+    pub store: Arc<Mutex<Store>>,
     pub key: String,
     pub text: String,
     pub target: String,
@@ -47,8 +52,8 @@ pub struct Job {
 
 #[derive(Clone, Debug)]
 pub enum Update {
-    Stage(String, Stage),
-    Done { key: String },
+    Stage(u64, String, Stage),
+    Done { doc: u64, key: String },
 }
 
 #[derive(Serialize, Deserialize, Clone, Default)]
@@ -280,7 +285,7 @@ impl Drop for Worker {
 
 impl Worker {
     /// Start the worker. `ctx` is only used to wake the UI when an update is ready.
-    pub fn spawn(model: &str, store: Arc<Mutex<Store>>, ctx: egui::Context) -> Self {
+    pub fn spawn(model: &str, ctx: egui::Context) -> Self {
         let (job_tx, job_rx) = mpsc::channel::<Job>();
         let (update_tx, update_rx) = mpsc::channel::<Update>();
         let log: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
@@ -300,13 +305,13 @@ impl Worker {
                         let _ = update_tx.send(update);
                         ctx.request_repaint();
                     };
-                    if store.lock().map(|s| s.get(&job.key).is_some()).unwrap_or(false) {
-                        notify(Update::Done { key: job.key });
+                    if job.store.lock().map(|s| s.get(&job.key).is_some()).unwrap_or(false) {
+                        notify(Update::Done { doc: job.doc, key: job.key });
                         continue;
                     }
-                    notify(Update::Stage(job.key.clone(), Stage::Queued));
+                    notify(Update::Stage(job.doc, job.key.clone(), Stage::Queued));
                     if llm.is_none() {
-                        notify(Update::Stage(job.key.clone(), Stage::LoadingModel));
+                        notify(Update::Stage(job.doc, job.key.clone(), Stage::LoadingModel));
                         let runtime = llm::prepare_runtime();
                         if let Some(dir) = runtime {
                             if let Ok(mut log) = worker_log.lock() {
@@ -329,29 +334,34 @@ impl Worker {
                             }
                             Err(error) => {
                                 sink(format!("model failed: {error}"));
-                                notify(Update::Stage(job.key.clone(), Stage::Failed(error)));
+                                notify(Update::Stage(job.doc, job.key.clone(), Stage::Failed(error)));
                                 continue;
                             }
                         }
                     }
-                    notify(Update::Stage(job.key.clone(), Stage::Translating));
+                    notify(Update::Stage(job.doc, job.key.clone(), Stage::Translating));
                     let result = llm.as_mut().map(|l| translate_paragraph(l, &job.text, &job.target));
                     if worker_cancel.load(Ordering::Relaxed) {
                         break;
                     }
                     match result {
                         Some(Ok(translation)) if !translation.trim().is_empty() => {
+                            let doc = job.doc;
                             let key = job.key.clone();
                             let source = job.text.clone();
-                            let saved = store.lock().map_err(|_| "cache lock poisoned".to_string()).and_then(|mut store| store.insert(&key, source.clone(), translation.clone(), job.page));
+                            let saved = job
+                                .store
+                                .lock()
+                                .map_err(|_| "cache lock poisoned".to_string())
+                                .and_then(|mut store| store.insert(&key, source.clone(), translation.clone(), job.page));
                             match saved {
-                                Ok(()) => notify(Update::Done { key }),
-                                Err(error) => notify(Update::Stage(key, Stage::Failed(error))),
+                                Ok(()) => notify(Update::Done { doc, key }),
+                                Err(error) => notify(Update::Stage(doc, key, Stage::Failed(error))),
                             }
                         }
-                        Some(Ok(_)) => notify(Update::Stage(job.key.clone(), Stage::Failed("the model returned nothing".into()))),
-                        Some(Err(error)) => notify(Update::Stage(job.key.clone(), Stage::Failed(error))),
-                        None => notify(Update::Stage(job.key.clone(), Stage::Failed("the model is not loaded".into()))),
+                        Some(Ok(_)) => notify(Update::Stage(job.doc, job.key.clone(), Stage::Failed("the model returned nothing".into()))),
+                        Some(Err(error)) => notify(Update::Stage(job.doc, job.key.clone(), Stage::Failed(error))),
+                        None => notify(Update::Stage(job.doc, job.key.clone(), Stage::Failed("the model is not loaded".into()))),
                     }
                 }
                 let _ = update_tx;
