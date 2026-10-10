@@ -41,8 +41,11 @@ Inter typeface and Lucide icons — is PdfCraft's (`crates/ui-egui/src/theme.rs`
   margin, so you can see at a glance what is already done.
 * **PdfCraft's chrome** — tab strip, mode bar, tool rails and a pasteboard with white,
   shadowed pages; light, dark or system theme; and a command palette on ⌘K. The right
-  rail opens a panel: **Outline** (click a bookmark to jump), **Translations** (the
-  document's translations, click one to jump to its page) and **Log**.
+  rail opens a panel: **Outline** (click a bookmark to jump), **Translations** and
+  **Log**. The Translations panel reads in document order: each paragraph's translation
+  is set in the document's own face at page size, the source quoted below it in small
+  type, and entries on the same page share one page heading. A row highlights under the
+  pointer and a click jumps to its page; the filter narrows the list.
 * **Request one paragraph** — click a paragraph (or the *Translate this paragraph*
   button on its card) to translate just that one. Nothing is translated until you
   ask.
@@ -80,13 +83,23 @@ Without a file argument, **Open…** (or ⌘/Ctrl+O) picks a PDF.
 
 **Chrome.** The tab strip holds the document tab; the mode bar has the **Menu**,
 the panel tabs (*Read · Outline · Translations · Log*) and, on the right, the target
-language, the model and the zoom. The left rail holds the reading tools (pan, zoom,
+language, the model and the zoom control. The left rail holds the reading tools (zoom,
 fit to width, actual size), the right rail the panel toggles, the theme and help.
 The theme follows **Light gray / Dark gray / Use system setting** (the button in the
 tab strip); ⌘K opens the command palette.
 
+**Zoom.** The zoom control is PdfCraft's: **⌘/Ctrl + wheel** (or a pinch) zooms
+continuously around the point under the pointer, the rail's zoom buttons and the
+percentage open a menu that steps through the same levels as PdfCraft's zoom menu
+(25 … 600%, *Actual size*, *Fit to width*). A zoom keeps the page in view where it
+is: the point under the pointer (or the middle of the window) stays put, so the
+page never jumps. When the band is wide enough for two pages — and always at
+*Fit to width* on a window that can hold them at 80% or more — the pages are laid
+out as a spread, two side by side, as PdfCraft's two-page view does; zooming in
+past that falls back to one page filling the width.
+
 Shortcuts: ⌘O open · ⌘K palette · ⌘+ / ⌘− zoom · ⌘0 actual size · ⌘2 fit to width ·
-Esc close the palette.
+Ctrl/⌘ + wheel zoom · Esc close the palette.
 
 ### Debug helpers (no UI)
 
@@ -139,7 +152,7 @@ and mtime, so replacing the PDF starts a fresh cache.
 | `src/theme.rs` | PdfCraft's design tokens, egui style and fonts |
 | `src/icons.rs` | PdfCraft's Lucide SVGs, tinted icon buttons |
 | `src/widgets.rs` | mode tabs, ghost buttons, pills, search box, section titles |
-| `src/render.rs` | background page renderer (one thread owns `PageRenderer`) |
+| `src/render.rs` | background page renderer (PdfCraft's `RenderPool`, most urgent page first) |
 | `src/paragraphs.rs` | reading-order lines → columns → paragraphs, content keys |
 | `src/typeface.rs` | the document's body family (serif/sans/mono) from its font names |
 | `src/store.rs` | translation cache + background translation worker |
@@ -151,11 +164,13 @@ the interface typefaces are PdfCraft's Inter and JetBrains Mono (OFL), and the d
 text is set in Source Serif Pro (OFL, `assets/fonts`); the theme tokens, widget metrics
 and chrome layout are copied from `crates/ui-egui`.
 
-Rendering and text extraction both go through
-`pdfcraft_render::PageRenderer`; a request for `RequestKind::Pixels` produces the
+Rendering and text extraction both go through PdfCraft's
+`pdfcraft_render::RenderPool`; a request for `RequestKind::Pixels` produces the
 page texture, `RequestKind::Text` the `PageText` the paragraphs are grouped from.
-The renderer runs on its own thread so the UI never blocks, and only pages near
-the viewport are requested (rasters far off screen are freed).
+The pool renders on several threads (one per core, up to seven) and the UI rebuilds
+its queue every frame from the pages still on screen, most urgent first, so a page
+scrolled away or a raster at an old zoom is dropped rather than rendered. Rasters
+that belong to a page far off screen are freed.
 
 Translation runs on a second thread that owns the model (loaded lazily on the
 first request), reports stages over a channel, and wakes the UI with
@@ -181,4 +196,9 @@ numbered batches, which keeps a small model from drifting or summarising.
   into a script they do not cover (e.g. CJK) would render as replacement boxes; adding a
   face (PdfCraft's optional `craft-fonts` input) would fix that.
 * Rastering happens at one scale per zoom step; the cache key does not include the
-  zoom, so panning/zooming re-renders as expected.
+  zoom, so panning/zooming re-renders as expected. Pages are rendered whole, where
+  PdfCraft switches to tiles once a page would exceed 4096 device pixels on a side,
+  so a very high zoom costs the whole page here and only the visible part there.
+* Paragraph grouping runs on the UI thread when a page's text layer arrives, where
+  PdfCraft only stores the text its workers extracted; a page with a very large text
+  layer can drop a frame.

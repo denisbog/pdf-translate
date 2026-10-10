@@ -21,6 +21,15 @@ use crate::widgets;
 
 const PAGE_GAP: f32 = 20.0;
 const CARD_GAP: f32 = 10.0;
+/// Gutter between the two pages of a row, when two fit side by side (PdfCraft's page gap).
+const SPREAD_GAP: f32 = 14.0;
+/// Fit to width falls back to one page when a spread would shrink a page below this.
+const FIT_SPREAD_MIN: f32 = 0.8;
+/// The zoom the view can show, and the steps a click on zoom in/out moves through
+/// (PdfCraft's, from Acrobat's zoom menu).
+const ZOOM_MIN: f32 = 0.25;
+const ZOOM_MAX: f32 = 6.0;
+const ZOOM_STEPS: [f32; 17] = [0.1, 0.25, 0.33, 0.5, 0.66, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0, 12.0, 16.0, 32.0];
 /// Inner padding of the translation card.
 const CARD_PADDING: f32 = 16.0;
 /// Padding inside the small chip, and the width its spinner takes before the label.
@@ -73,8 +82,12 @@ pub struct Doc {
 /// One page's geometry for this frame, so overlays draw after the pages.
 struct PageGeom {
     page: usize,
+    /// The row the page sits in, for painting and hit tests.
     band: Rect,
     page_rect: Rect,
+    /// The page's own column (its half of the row), so a card or chip never covers the
+    /// page beside it.
+    column: Rect,
     paragraphs: Vec<Rect>,
 }
 
@@ -156,11 +169,21 @@ pub struct App {
     palette_focus: bool,
     shortcuts: bool,
     fit_width: bool,
+    /// A zoom the chrome asked for (buttons, menu, shortcuts); applied in the viewer,
+    /// where the pages' rectangles are known, so the view can keep its place.
+    pending_zoom: Option<f32>,
+    /// Where the view is pinned across a zoom: page, how far down it (0..1) and how far
+    /// from the viewport's top edge the pinned point sits.
+    zoom_anchor: Option<(usize, f32, f32)>,
+    /// Last frame's page rectangles on screen, to find the page under a point.
+    last_pages: Vec<(usize, Rect)>,
 }
 
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         egui_extras::install_image_loaders(&cc.egui_ctx);
+        // ⌘/Ctrl + and − drive the document's zoom, not egui's whole-interface zoom.
+        cc.egui_ctx.options_mut(|options| options.zoom_with_keyboard = false);
         theme::install_fonts(&cc.egui_ctx);
         let settings = cc
             .storage
@@ -190,6 +213,9 @@ impl App {
             palette_focus: false,
             shortcuts: false,
             fit_width: false,
+            pending_zoom: None,
+            zoom_anchor: None,
+            last_pages: Vec::new(),
             pending_open: None,
         };
         if let Some(path) = std::env::args().nth(1).map(PathBuf::from) {
@@ -239,6 +265,10 @@ impl App {
                         self.card_rect = None;
                         self.goto = None;
                         self.fit_width = true;
+                        self.pending_zoom = None;
+                        // The previous document's page rectangles must not anchor this one.
+                        self.zoom_anchor = None;
+                        self.last_pages.clear();
                         self.toast(format!("{} — {pages} pages", info.title.clone().unwrap_or_else(|| file_name(&path))));
                         let face = typeface::of_document(&info.fonts);
                         self.doc = Some(Doc { path, info, client, store, face });
@@ -258,6 +288,8 @@ impl App {
         self.dismissed.clear();
         self.card_rect = None;
         self.goto = None;
+        self.zoom_anchor = None;
+        self.last_pages.clear();
     }
 
     fn respawn_worker(&mut self, ctx: &egui::Context) {
@@ -302,17 +334,72 @@ impl App {
         worker.submit(Job { key, text, target: self.settings.target.clone(), page });
     }
 
-    fn zoom_by(&mut self, delta: f32) {
-        self.settings.zoom = (self.settings.zoom + delta).clamp(0.25, 6.0);
+    /// One step up or down the standard zoom levels (PdfCraft's `zoom_step`), applied by the
+    /// viewer so the page in view stays where it is.
+    fn zoom_step(&mut self, up: bool) {
+        let zoom = self.settings.zoom;
+        let next = if up {
+            ZOOM_STEPS.iter().copied().find(|step| *step > zoom * 1.01)
+        } else {
+            ZOOM_STEPS.iter().rev().copied().find(|step| *step < zoom * 0.99)
+        };
+        if let Some(next) = next {
+            self.pending_zoom = Some(next.clamp(ZOOM_MIN, ZOOM_MAX));
+        }
+    }
+
+    /// Ctrl/Cmd + wheel (and pinch): egui reports the gesture as a zoom factor. Applied here,
+    /// before the pages are laid out, anchored on the point under the pointer.
+    fn zoom_input(&mut self, ui: &egui::Ui, viewport: Rect) {
+        let delta = ui.input(|input| input.zoom_delta());
+        let pointer = ui.ctx().pointer_hover_pos();
+        if (delta - 1.0).abs() > 0.001 {
+            if let Some(pointer) = pointer.filter(|pointer| viewport.contains(*pointer)) {
+                let zoom = self.settings.zoom * delta;
+                self.zoom_to(zoom, pointer, viewport);
+            }
+        }
+        if let Some(zoom) = self.pending_zoom.take() {
+            self.zoom_to(zoom, viewport.center(), viewport);
+        }
+    }
+
+    /// Set the zoom, keeping the document point under `screen` still: the page under it, how
+    /// far down that page, and how far from the viewport's top the point sits are remembered
+    /// for the layout that follows.
+    fn zoom_to(&mut self, zoom: f32, screen: Pos2, viewport: Rect) {
+        if let Some(anchor) = self.anchor_under(screen, viewport.top()) {
+            self.zoom_anchor = Some(anchor);
+        }
+        self.settings.zoom = zoom.clamp(ZOOM_MIN, ZOOM_MAX);
+        self.fit_width = false;
+    }
+
+    /// The page nearest `screen`, how far down it the point sits (0..1), and how far the point
+    /// is from the viewport's top edge.
+    fn anchor_under(&self, screen: Pos2, viewport_top: f32) -> Option<(usize, f32, f32)> {
+        let distance = |rect: &Rect| rect.distance_to_pos(screen);
+        let (page, rect) = self.last_pages.iter().min_by(|a, b| distance(&a.1).total_cmp(&distance(&b.1))).copied()?;
+        let fraction = ((screen.y - rect.top()) / rect.height().max(1.0)).clamp(0.0, 1.0);
+        Some((page, fraction, screen.y - viewport_top))
+    }
+
+    /// The page nearest the middle of the viewport, for the renderer's queue.
+    fn current_page(&self, viewport: Rect) -> Option<usize> {
+        let middle = viewport.center().y;
+        self.last_pages
+            .iter()
+            .min_by(|a, b| (a.1.center().y - middle).abs().total_cmp(&(b.1.center().y - middle).abs()))
+            .map(|(page, _)| *page)
     }
 
     fn run_command(&mut self, cmd: Cmd) {
         match cmd {
             Cmd::Open => self.open_dialog(),
             Cmd::Close => self.close_document(),
-            Cmd::ZoomIn => self.zoom_by(0.1),
-            Cmd::ZoomOut => self.zoom_by(-0.1),
-            Cmd::Zoom100 => self.settings.zoom = 1.0,
+            Cmd::ZoomIn => self.zoom_step(true),
+            Cmd::ZoomOut => self.zoom_step(false),
+            Cmd::Zoom100 => self.pending_zoom = Some(1.0),
             Cmd::FitWidth => self.fit_width = true,
             Cmd::Panel(panel) => self.right = if self.right == Some(panel) { None } else { Some(panel) },
             Cmd::Theme(preference) => self.settings.theme = preference,
@@ -437,11 +524,11 @@ impl App {
                         self.language_button(ui, ctx);
                         ui.add_space(8.0);
                         if icons::button(ui, "zoom-in", 32.0, false, "Zoom in (⌘+)").clicked() {
-                            self.zoom_by(0.1);
+                            self.zoom_step(true);
                         }
-                        ui.label(RichText::new(format!("{:.0}%", self.settings.zoom * 100.0)).color(t.text_muted).font(theme::medium(12.5)));
+                        self.zoom_button(ui);
                         if icons::button(ui, "zoom-out", 32.0, false, "Zoom out (⌘−)").clicked() {
-                            self.zoom_by(-0.1);
+                            self.zoom_step(false);
                         }
                     });
                 });
@@ -465,15 +552,15 @@ impl App {
             ui.separator();
             ui.label(RichText::new("Zoom").small().color(Tokens::get(ui.ctx()).text_faint));
             if ui.button("Zoom in").clicked() {
-                self.zoom_by(0.1);
+                self.zoom_step(true);
                 ui.close();
             }
             if ui.button("Zoom out").clicked() {
-                self.zoom_by(-0.1);
+                self.zoom_step(false);
                 ui.close();
             }
             if ui.button("Actual size (100%)").clicked() {
-                self.settings.zoom = 1.0;
+                self.pending_zoom = Some(1.0);
                 ui.close();
             }
             if ui.button("Fit to width").clicked() {
@@ -547,6 +634,45 @@ impl App {
         }
     }
 
+    /// The zoom control: the current percentage opens PdfCraft's View ▸ Zoom choices —
+    /// Actual size, Fit to width and the standard levels a click on zoom in/out steps through.
+    fn zoom_button(&mut self, ui: &mut egui::Ui) {
+        let t = Tokens::get(ui.ctx());
+        let mut chosen = None;
+        let mut fit = false;
+        let (rect, response) = ui.allocate_exact_size(Vec2::new(52.0, 32.0), Sense::click());
+        if response.hovered() {
+            ui.painter().rect_filled(rect, t.radius, t.hover);
+        }
+        ui.painter().text(rect.center(), Align2::CENTER_CENTER, format!("{:.0}%", self.settings.zoom * 100.0), theme::medium(12.5), t.text_muted);
+        egui::Popup::menu(&response).show(|ui| {
+            ui.set_min_width(190.0);
+            ui.label(RichText::new("Zoom").small().color(t.text_faint));
+            if ui.button("Actual size (100%)").clicked() {
+                chosen = Some(1.0);
+                ui.close();
+            }
+            if ui.button("Fit to width").clicked() {
+                fit = true;
+                ui.close();
+            }
+            ui.separator();
+            for step in ZOOM_STEPS.into_iter().filter(|step| (ZOOM_MIN..=ZOOM_MAX).contains(step)) {
+                if ui.radio((self.settings.zoom - step).abs() < 0.005, format!("{:.0}%", step * 100.0)).clicked() {
+                    chosen = Some(step);
+                    ui.close();
+                }
+            }
+        });
+        response.on_hover_text("Zoom — Ctrl + wheel zooms in and out");
+        if fit {
+            self.fit_width = true;
+        }
+        if let Some(step) = chosen {
+            self.pending_zoom = Some(step);
+        }
+    }
+
     fn left_rail(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let t = Tokens::get(ctx);
         egui::Panel::left("left_rail")
@@ -557,17 +683,17 @@ impl App {
                 if icons::button(ui, "hand", 36.0, self.pan, "Pan (drag the page)").clicked() {
                     self.pan = !self.pan;
                 }
-                if icons::button(ui, "zoom-out", 36.0, false, "Zoom out").clicked() {
-                    self.zoom_by(-0.1);
+                if icons::button(ui, "zoom-out", 36.0, false, "Zoom out (⌘−)").clicked() {
+                    self.zoom_step(false);
                 }
-                if icons::button(ui, "zoom-in", 36.0, false, "Zoom in").clicked() {
-                    self.zoom_by(0.1);
+                if icons::button(ui, "zoom-in", 36.0, false, "Zoom in (⌘+)").clicked() {
+                    self.zoom_step(true);
                 }
                 if icons::button(ui, "maximize", 36.0, false, "Fit to width").clicked() {
                     self.fit_width = true;
                 }
                 if icons::button(ui, "gauge", 36.0, false, "Actual size (100%)").clicked() {
-                    self.settings.zoom = 1.0;
+                    self.pending_zoom = Some(1.0);
                 }
             });
     }
@@ -743,36 +869,63 @@ impl App {
     fn viewer(&mut self, ui: &mut egui::Ui, doc: &mut Doc) {
         let t = Tokens::get(ui.ctx());
         let page_count = doc.info.pages.len();
-        // Fit to width before working out where to scroll, so a jump lands on the page.
+        // Ctrl/Cmd + wheel, and any zoom the chrome asked for, are applied here — before the
+        // pages are laid out — so the page in view can keep its place across the change.
+        let viewport = ui.available_rect_before_wrap();
+        self.zoom_input(ui, viewport);
+        // Fit to width before working out where to scroll, so a jump lands on the page. A
+        // window wide enough for two pages at a readable size gets a spread (PdfCraft's
+        // two-page view); otherwise one page fills the band.
         if self.fit_width {
-            let band = ui.available_width().max(64.0);
+            let band = viewport.width().max(64.0);
             let widest = doc.info.pages.iter().map(|page| page.width).fold(1.0_f32, f32::max);
-            self.settings.zoom = ((band - 32.0) / widest).clamp(0.25, 6.0);
+            let spread = (band - 32.0 - SPREAD_GAP) / (2.0 * widest);
+            let zoom = if spread >= FIT_SPREAD_MIN { spread } else { (band - 32.0) / widest };
+            if let Some(anchor) = self.anchor_under(viewport.center(), viewport.top()) {
+                self.zoom_anchor = Some(anchor);
+            }
+            self.settings.zoom = zoom.clamp(ZOOM_MIN, ZOOM_MAX);
             self.fit_width = false;
         }
         let goto_page = self.goto.take();
-        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            let band = ui.available_width().max(64.0);
+        let zoom = self.settings.zoom;
+        let scale = zoom * ui.ctx().pixels_per_point();
+        let band = viewport.width().max(64.0);
+        let layout = page_layout(&doc.info, band, zoom);
+        let current = self.current_page(viewport);
+        let mut scroll = egui::ScrollArea::vertical().auto_shrink([false, false]);
+        if let Some(page) = goto_page {
+            if let Some(place) = layout.pages.iter().find(|place| place.page == page) {
+                scroll = scroll.vertical_scroll_offset(place.rect.top());
+            }
+        } else if let Some((page, fraction, rel_y)) = self.zoom_anchor.take() {
+            if let Some(place) = layout.pages.iter().find(|place| place.page == page) {
+                scroll = scroll.vertical_scroll_offset((place.rect.top() + fraction * place.rect.height() - rel_y).max(0.0));
+            }
+        }
+        scroll.show(ui, |ui| {
+            // Bands are stacked exactly, so a page's offset in the content is known without
+            // asking egui where it landed (the zoom anchor is set from it).
+            ui.spacing_mut().item_spacing = Vec2::ZERO;
+            let (content_rect, _) = ui.allocate_exact_size(Vec2::new(band, layout.content_h), Sense::hover());
+            let origin = content_rect.min.to_vec2();
             if self.pan && ui.input(|input| input.pointer.primary_down()) {
                 let delta = ui.input(|input| input.pointer.delta());
                 ui.scroll_with_delta(-delta);
             }
-            let zoom = self.settings.zoom;
-            let scale = zoom * ui.ctx().pixels_per_point();
             let clip = ui.clip_rect();
-            let pointer = ui.ctx().pointer_hover_pos();
+            // The pointer only counts over the page area: a paragraph that has scrolled up
+            // behind the mode bar — or that sits under an open menu — must not be hovered or
+            // clicked. `rect_contains_pointer` also rejects a pointer over another layer.
+            let pointer = ui.ctx().pointer_hover_pos().filter(|pointer| ui.rect_contains_pointer(Rect::from_min_size(*pointer, Vec2::splat(1.0))));
             let mut geoms: Vec<PageGeom> = Vec::with_capacity(page_count);
             let mut hovered: Option<(usize, usize)> = None;
 
-            for page in 0..page_count {
-                let info = &doc.info.pages[page];
-                let display = Vec2::new((info.width * zoom).max(1.0), (info.height * zoom).max(1.0));
-                let (band_rect, _) = ui.allocate_exact_size(Vec2::new(band, display.y + PAGE_GAP), Sense::hover());
-                if goto_page == Some(page) {
-                    ui.scroll_to_rect(band_rect, Some(Align::TOP));
-                }
-                let origin = band_rect.min + Vec2::new(((band - display.x) / 2.0).max(0.0), 0.0);
-                let page_rect = Rect::from_min_size(origin, display);
+            for place in &layout.pages {
+                let page = place.page;
+                let band_rect = place.row.translate(origin);
+                let page_rect = place.rect.translate(origin);
+                let column = place.column.translate(origin);
                 let visible = clip.expand(clip.height()).intersects(band_rect);
                 if visible {
                     doc.client.ensure_text(page);
@@ -813,7 +966,7 @@ impl App {
                         }
                     }
                 }
-                geoms.push(PageGeom { page, band: band_rect, page_rect, paragraphs: paragraph_rects });
+                geoms.push(PageGeom { page, band: band_rect, page_rect, column, paragraphs: paragraph_rects });
             }
 
             if let Some((page, index)) = hovered {
@@ -846,7 +999,7 @@ impl App {
                         continue;
                     }
                     if let Some(rect) = geom.paragraphs.get(index) {
-                        draw_chip(ui, geom.band, *rect, stage.label(), true, &t);
+                        draw_chip(ui, geom.column, *rect, stage.label(), true, &t);
                     }
                 }
             }
@@ -865,7 +1018,7 @@ impl App {
                             // Reading a translation: the card, in the paragraph's own format.
                             if !self.dismissed.contains(&(page, index)) {
                                 let (card_rect, action) =
-                                    card_ui(ui, geom.band, geom.page_rect, rect, doc.face, &paragraph, &translation, &self.settings.target, zoom, page, index);
+                                    card_ui(ui, geom.column, geom.page_rect, rect, doc.face, &paragraph, &translation, &self.settings.target, zoom, page, index);
                                 self.card_rect = Some(card_rect);
                                 self.card_rects.push(card_rect);
                                 if matches!(action, CardAction::Dismiss) {
@@ -879,7 +1032,7 @@ impl App {
                                 Some(Stage::Failed(_)) => "Translation failed — click to retry",
                                 _ => "Click to translate",
                             };
-                            self.chip_rect = Some(draw_chip(ui, geom.band, rect, label, false, &t));
+                            self.chip_rect = Some(draw_chip(ui, geom.column, rect, label, false, &t));
                         }
                     }
                 }
@@ -888,7 +1041,7 @@ impl App {
             // Clicks: a paragraph (or its chip) asks for a translation; a translated
             // paragraph opens its card again.
             let clicked = ui.input(|input| input.pointer.primary_clicked());
-            let click_pos = ui.input(|input| input.pointer.interact_pos());
+            let click_pos = ui.input(|input| input.pointer.interact_pos()).filter(|position| ui.rect_contains_pointer(Rect::from_min_size(*position, Vec2::splat(1.0))));
             if clicked && !self.pan {
                 if let Some(position) = click_pos {
                     let on_chip = self.chip_rect.is_some_and(|rect| rect.contains(position));
@@ -912,7 +1065,11 @@ impl App {
                     }
                 }
             }
+            // Remember where every page is, so the next zoom can pin the point under the
+            // pointer (or the viewport's centre) and the page in view does not shift.
+            self.last_pages = geoms.iter().map(|geom| (geom.page, geom.page_rect)).collect();
         });
+        doc.client.submit(current);
     }
 
     fn welcome(&mut self, ui: &mut egui::Ui) {
@@ -956,13 +1113,13 @@ impl eframe::App for App {
             self.palette_focus = true;
         }
         if command && ctx.input(|input| input.key_pressed(egui::Key::Plus)) {
-            self.zoom_by(0.1);
+            self.zoom_step(true);
         }
         if command && ctx.input(|input| input.key_pressed(egui::Key::Minus)) {
-            self.zoom_by(-0.1);
+            self.zoom_step(false);
         }
         if command && ctx.input(|input| input.key_pressed(egui::Key::Num0)) {
-            self.settings.zoom = 1.0;
+            self.pending_zoom = Some(1.0);
         }
         if command && ctx.input(|input| input.key_pressed(egui::Key::Num2)) {
             self.fit_width = true;
@@ -1049,36 +1206,89 @@ fn outline_items(ui: &mut egui::Ui, items: &[OutlineItem], goto: &mut Option<usi
 }
 
 fn translations_panel(ui: &mut egui::Ui, doc: &Doc, filter: &mut String, goto: &mut Option<usize>) {
+    let t = Tokens::get(ui.ctx());
     widgets::section_title(ui, "Translations");
     ui.add(egui::TextEdit::singleline(filter).hint_text("Filter…").desired_width(f32::INFINITY));
+    ui.add_space(8.0);
+    // The store keeps the entries by source text; read them in document order instead, so the
+    // panel follows the page sequence a reader moves through.
+    let mut entries = doc.store.lock().map(|store| store.entries()).unwrap_or_default();
+    entries.sort_by_key(|(_, _, _, page)| page.unwrap_or(usize::MAX));
+    let query = filter.trim().to_lowercase();
+    let matching: Vec<&(String, String, String, Option<usize>)> = entries
+        .iter()
+        .filter(|(_, source, translation, _)| {
+            query.is_empty() || source.to_lowercase().contains(&query) || translation.to_lowercase().contains(&query)
+        })
+        .collect();
+    let count = if query.is_empty() {
+        format!("{} paragraph{} translated", entries.len(), if entries.len() == 1 { "" } else { "s" })
+    } else {
+        format!("{} of {}", matching.len(), entries.len())
+    };
+    ui.label(RichText::new(count).font(theme::regular(11.5)).color(t.text_faint));
     ui.add_space(6.0);
-    let entries = doc.store.lock().map(|store| store.entries()).unwrap_or_default();
-    ui.label(RichText::new(format!("{} translated paragraph(s)", entries.len())).weak().small());
-    ui.add_space(4.0);
-    let query = filter.to_lowercase();
+    if matching.is_empty() {
+        let empty = if entries.is_empty() { "Nothing translated yet. Hover a paragraph and click to translate it." } else { "No translation matches the filter." };
+        ui.label(RichText::new(empty).weak());
+        return;
+    }
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-        let mut shown = 0;
-        for (key, source, translation, page) in &entries {
-            if !query.is_empty() && !source.to_lowercase().contains(&query) && !translation.to_lowercase().contains(&query) {
-                continue;
+        ui.spacing_mut().item_spacing.y = 2.0;
+        // Entries are in document order, so consecutive ones usually share a page: label the
+        // page once per group instead of on every row.
+        let mut previous: Option<usize> = None;
+        for (key, source, translation, page) in matching {
+            let label = page.filter(|page| Some(*page) != previous);
+            if let Some(page) = page {
+                previous = Some(*page);
             }
-            shown += 1;
-            let row = ui.vertical(|ui| {
-                ui.add_space(6.0);
-                ui.label(RichText::new(translation).font(theme::regular(13.0)));
-                ui.label(RichText::new(shorten(source, 90)).weak().small());
-            });
-            if ui.interact(row.response.rect, ui.id().with(("translation", key)), Sense::click()).on_hover_text("Show this page").clicked() {
+            if translation_row(ui, doc, key, translation, source, label, &t) {
                 if let Some(page) = page.or_else(|| page_of_key(doc, key)) {
                     *goto = Some(page);
                 }
             }
-            ui.separator();
-        }
-        if shown == 0 {
-            ui.label(RichText::new("Nothing translated yet. Hover a paragraph and click to translate it.").weak());
         }
     });
+}
+
+/// One translated paragraph in the panel: the page it belongs to, the translation set in the
+/// document's own face (as the card beside the page is), and the source below it in small type,
+/// two lines at most. Returns whether the row was clicked, so the caller can jump to its page.
+fn translation_row(ui: &mut egui::Ui, doc: &Doc, key: &str, translation: &str, source: &str, page: Option<usize>, t: &Tokens) -> bool {
+    // Reserve the row's background before the text, so the hover fill lands behind it.
+    let background = ui.painter().add(egui::Shape::Noop);
+    let inner = Frame::NONE.inner_margin(Margin { left: 12, right: 8, top: 8, bottom: 9 }).show(ui, |ui| {
+        ui.spacing_mut().item_spacing = Vec2::new(7.0, 4.0);
+        if let Some(page) = page {
+            ui.horizontal(|ui| {
+                // The accent dash is the same mark a translated paragraph carries in the page
+                // margin. It stays next to the label, so a row clipped by the scroll viewport
+                // cannot leave a stray sliver behind.
+                let (dash, _) = ui.allocate_exact_size(Vec2::new(3.0, 11.0), Sense::hover());
+                ui.painter().rect_filled(dash, 1.5, t.accent);
+                ui.label(RichText::new(format!("PAGE {}", page + 1)).font(theme::semibold(9.5)).color(t.text_faint).extra_letter_spacing(0.5));
+            });
+        }
+        // The translation keeps the run-in heading bold, as it does beside the page.
+        let bold = run_in(source).and_then(|_| run_in(translation));
+        let mut job = document_job(translation, 13.5, 13.5 * 1.45, doc.face, bold, t.text);
+        job.wrap.max_width = ui.available_width();
+        ui.add(egui::Label::new(job));
+        let mut source = LayoutJob::single_section(source.to_owned(), TextFormat { font_id: theme::regular(11.5), color: t.text_muted, ..Default::default() });
+        source.wrap = egui::text::TextWrapping {
+            max_width: ui.available_width(),
+            max_rows: 2,
+            break_anywhere: false,
+            overflow_character: Some('…'),
+        };
+        ui.add(egui::Label::new(source));
+    });
+    let rect = inner.response.rect;
+    let response = ui.interact(rect, ui.id().with(("translation-row", key)), Sense::click());
+    let fill = if response.hovered() { t.hover } else { Color32::TRANSPARENT };
+    ui.painter().set(background, egui::Shape::rect_filled(rect, CornerRadius::same(6), fill));
+    response.on_hover_text("Show this page").clicked()
 }
 
 fn log_panel(ui: &mut egui::Ui, worker: Option<&Worker>) {
@@ -1100,16 +1310,67 @@ fn page_of_key(doc: &Doc, key: &str) -> Option<usize> {
     doc.client.slots.iter().position(|slot| slot.paragraphs.as_ref().is_some_and(|paragraphs| paragraphs.iter().any(|paragraph| paragraph.key() == key)))
 }
 
-fn shorten(text: &str, limit: usize) -> String {
-    if text.chars().count() <= limit {
-        text.to_string()
-    } else {
-        format!("{}…", text.chars().take(limit).collect::<String>())
-    }
-}
 
 fn file_name(path: &std::path::Path) -> String {
     path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_else(|| path.to_string_lossy().into_owned())
+}
+
+/// One page's place in the scroll content: the row it sits in, its own rectangle, and the
+/// column its card and chip may use. Coordinates are relative to the content's top-left; the
+/// caller adds the scroll origin.
+struct Placement {
+    page: usize,
+    row: Rect,
+    rect: Rect,
+    column: Rect,
+}
+
+/// Every page's place at `zoom`. Pages go one to a row, or two side by side while the band is
+/// wide enough for a spread (as in PdfCraft's two-page view); a row is centred in the band and
+/// its pages are centred against each other.
+struct PageLayout {
+    pages: Vec<Placement>,
+    content_h: f32,
+}
+
+fn page_layout(info: &DocInfo, band: f32, zoom: f32) -> PageLayout {
+    let widest = info.pages.iter().map(|page| page.width).fold(1.0_f32, f32::max);
+    let per_row = if 2.0 * widest * zoom + SPREAD_GAP <= band { 2 } else { 1 };
+    let count = info.pages.len();
+    let mut pages = Vec::with_capacity(count);
+    let mut y = 0.0;
+    for start in (0..count).step_by(per_row) {
+        let row: Vec<usize> = (start..(start + per_row).min(count)).collect();
+        let sizes: Vec<Vec2> = row
+            .iter()
+            .map(|page| {
+                let info = &info.pages[*page];
+                Vec2::new((info.width * zoom).max(1.0), (info.height * zoom).max(1.0))
+            })
+            .collect();
+        let row_w: f32 = sizes.iter().map(|size| size.x).sum::<f32>() + SPREAD_GAP * (sizes.len() as f32 - 1.0);
+        let row_h = sizes.iter().map(|size| size.y).fold(0.0_f32, f32::max);
+        let row_top = y;
+        let mut x = ((band - row_w) / 2.0).max(0.0);
+        let two = sizes.len() == 2;
+        // Where the two halves of the row part, so a card stays on its own page's side.
+        let middle = x + sizes[0].x + if two { SPREAD_GAP * 0.5 } else { 0.0 };
+        let row_rect = Rect::from_min_max(Pos2::new(0.0, row_top), Pos2::new(band, row_top + row_h));
+        for (index, (page, size)) in row.into_iter().zip(sizes).enumerate() {
+            let rect = Rect::from_min_size(Pos2::new(x, row_top + (row_h - size.y) / 2.0), size);
+            let column = if !two {
+                row_rect
+            } else if index == 0 {
+                Rect::from_min_max(row_rect.min, Pos2::new(middle, row_rect.bottom()))
+            } else {
+                Rect::from_min_max(Pos2::new(middle, row_rect.top()), row_rect.max)
+            };
+            pages.push(Placement { page, row: row_rect, rect, column });
+            x += size.x + SPREAD_GAP;
+        }
+        y += row_h + PAGE_GAP;
+    }
+    PageLayout { pages, content_h: (y - PAGE_GAP).max(0.0) }
 }
 
 fn to_screen(origin: Pos2, zoom: f32, rect: [f32; 4]) -> Rect {
@@ -1183,13 +1444,18 @@ fn card_ui(
     index: usize,
 ) -> (Rect, CardAction) {
     let t = Tokens::get(ui.ctx());
-    // Put the card on the side of the paragraph that has the most room on the page, so it
-    // never covers the text it translates when there is a margin to use.
-    let space_left = paragraph_rect.left() - page_rect.left();
-    let space_right = page_rect.right() - paragraph_rect.right();
-    let to_the_right = space_right >= space_left;
+    // Put the card on the side of the paragraph that has the most room *in its column*, so on
+    // a two-page row it never covers the page beside it; within one page the page's own
+    // margins decide, so a paragraph with a wide side margin keeps its card there.
+    let room_left = paragraph_rect.left() - band.left();
+    let room_right = band.right() - paragraph_rect.right();
+    let to_the_right = if (room_left - room_right).abs() > 1.0 {
+        room_right > room_left
+    } else {
+        page_rect.right() - paragraph_rect.right() >= paragraph_rect.left() - page_rect.left()
+    };
     // As wide as the paragraph when that side has room, so the translation keeps its measure.
-    let room = if to_the_right { band.right() - paragraph_rect.right() } else { paragraph_rect.left() - band.left() };
+    let room = if to_the_right { room_right } else { room_left };
     let card_width = paragraph_rect.width().clamp(200.0, 640.0).min((room - CARD_GAP - 6.0).max(200.0)).min((band.width() - 16.0).max(200.0));
     let mut x = if to_the_right { paragraph_rect.right() + CARD_GAP } else { paragraph_rect.left() - CARD_GAP - card_width };
     x = x.clamp(band.left() + 6.0, (band.right() - card_width - 6.0).max(band.left() + 6.0));
