@@ -62,6 +62,10 @@ Inter typeface and Lucide icons — is PdfCraft's (`crates/ui-egui/src/theme.rs`
 * **Cache** — every translation is written to disk and reused; opening the same
   PDF again (or another reader) never asks the model twice.
 
+## Screenshot
+
+![PDF Translate: hovering a paragraph shows its translation beside it, in the document's own type](doc/Screenshot_20261010_122823.jpeg)
+
 ## Requirements
 
 * Rust (edition 2021) with a toolchain at least `1.92` (the `hayro` crate's
