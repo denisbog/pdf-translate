@@ -29,6 +29,7 @@ static ICONS: &[(&str, Icon)] = &[
     ("maximize", Icon::Maximize),
     ("gauge", Icon::Gauge),
     ("square", Icon::Square),
+    ("layout", Icon::LayoutTemplate),
     ("list", Icon::List),
     ("languages", Icon::Languages),
     ("square-terminal", Icon::SquareTerminal),

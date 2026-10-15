@@ -12,6 +12,7 @@ use std::time::Duration;
 
 use crate::pdf::{RenderConfig, RenderPool, RenderRequest, RenderedPage, RequestKind};
 
+use crate::layout::{self, PageLayout};
 use crate::paragraphs::{self, Paragraph};
 
 /// Everything the UI keeps for one page.
@@ -23,6 +24,8 @@ pub struct PageSlot {
     pub texture_scale: f32,
     /// Paragraphs of this page, once its text layer has arrived.
     pub paragraphs: Option<Vec<Paragraph>>,
+    /// Columns and text regions of this page, from the same text layer.
+    pub layout: Option<PageLayout>,
     /// Why the page could not be rendered.
     pub error: Option<String>,
     pending_pixels: Option<RenderRequest>,
@@ -138,7 +141,9 @@ impl RenderClient {
                 }
                 slot.pending_text = None;
                 if let Some(text) = text {
-                    slot.paragraphs = Some(paragraphs::extract(&text));
+                    let paragraphs = paragraphs::extract(&text);
+                    slot.layout = Some(layout::analyze(&text, &paragraphs));
+                    slot.paragraphs = Some(paragraphs);
                 } else if let Some(error) = error {
                     slot.error = Some(error);
                 }

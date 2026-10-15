@@ -1,7 +1,7 @@
 //! Translation cache and background translation worker.
 //!
 //! Translations live in `~/.cache/pdf-translate/<document>-<target>.json`, keyed by the
-//! normalised paragraph text, so a second reader (or a re-open) never asks the model
+//! normalised sentence text, so a second reader (or a re-open) never asks the model
 //! again. Requests run on one worker thread that owns the local ONNX model, and report
 //! their stage back to the UI while they work.
 
@@ -46,7 +46,7 @@ pub struct Job {
     pub key: String,
     pub text: String,
     pub target: String,
-    /// The page the paragraph is on, so the translations list can jump back to it.
+    /// The page the sentence is on, so the translations list can jump back to it.
     pub page: usize,
 }
 
@@ -60,7 +60,7 @@ pub enum Update {
 pub struct Entry {
     pub source: String,
     pub translation: String,
-    /// The page the paragraph was on, when it was translated.
+    /// The page the sentence was on, when it was translated.
     #[serde(default)]
     pub page: Option<usize>,
 }

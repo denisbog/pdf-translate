@@ -12,6 +12,7 @@
 
 mod app;
 mod icons;
+mod layout;
 mod llm;
 mod paragraphs;
 mod pdf;
@@ -23,17 +24,20 @@ mod widgets;
 
 use std::sync::Arc;
 
-use crate::pdf::{PageRenderer, RenderConfig, RenderRequest, RequestKind};
+use crate::pdf::{PageRenderer, PageText, RenderConfig, RenderRequest, RequestKind};
 
 fn main() -> eframe::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     match args.get(1).map(String::as_str) {
         Some("--paragraphs") => return paragraphs_cli(&args),
+        Some("--layout") => return layout_cli(&args),
         Some("--lines") => return lines_cli(&args),
         Some("--check") => return check_cli(&args),
         Some("--translate") => return translate_cli(&args),
         Some("--help" | "-h") => {
-            println!("pdf-translate [file.pdf …]\n\n  --paragraphs <file.pdf> [page]                     list detected paragraphs\n  --translate  <file.pdf> <page> <n> [target] [model] translate one paragraph");
+            println!(
+                "pdf-translate [file.pdf …]\n\n  --paragraphs <file.pdf> [page]                     list detected paragraphs\n  --layout     <file.pdf> [page]                     list columns and text regions\n  --translate  <file.pdf> <page> <n> [target] [model] translate one paragraph"
+            );
             return Ok(());
         }
         _ => {}
@@ -54,13 +58,17 @@ fn open_pdf(path: &str) -> PageRenderer {
     PageRenderer::new(Arc::new(bytes), RenderConfig::default())
 }
 
-fn page_paragraphs(renderer: &mut PageRenderer, page: usize) -> Vec<paragraphs::Paragraph> {
+fn page_text(renderer: &mut PageRenderer, page: usize) -> Arc<PageText> {
     let rendered = renderer.render(RenderRequest { page, kind: RequestKind::Text, tile: None, scale: 1.0, tag: 0 });
     let Some(text) = rendered.text else {
         eprintln!("page {page} has no text: {:?}", rendered.error);
         std::process::exit(1);
     };
-    paragraphs::extract(&text)
+    text
+}
+
+fn page_paragraphs(renderer: &mut PageRenderer, page: usize) -> Vec<paragraphs::Paragraph> {
+    paragraphs::extract(&page_text(renderer, page))
 }
 
 fn paragraphs_cli(args: &[String]) -> eframe::Result<()> {
@@ -71,7 +79,80 @@ fn paragraphs_cli(args: &[String]) -> eframe::Result<()> {
     let page: usize = args.get(3).and_then(|page| page.parse().ok()).unwrap_or(0);
     let mut renderer = open_pdf(path);
     for (index, paragraph) in page_paragraphs(&mut renderer, page).iter().enumerate() {
-        println!("#{index} size={:.1} leading={:.2} box=[{:.1}, {:.1}, {:.1}, {:.1}]\n    {}", paragraph.size, paragraph.line_spacing, paragraph.rect[0], paragraph.rect[1], paragraph.rect[2], paragraph.rect[3], paragraph.text);
+        println!(
+            "#{index} {:?} size={:.1} leading={:.2} box=[{:.1}, {:.1}, {:.1}, {:.1}]\n    {}",
+            paragraph.kind,
+            paragraph.size,
+            paragraph.line_spacing,
+            paragraph.rect[0],
+            paragraph.rect[1],
+            paragraph.rect[2],
+            paragraph.rect[3],
+            paragraph.text
+        );
+    }
+    Ok(())
+}
+
+/// List what the page layout found: the columns' geometry, the text regions in them, and the
+/// sentence runs (a run may cross a column or a page break).
+fn layout_cli(args: &[String]) -> eframe::Result<()> {
+    let Some(path) = args.get(2) else {
+        eprintln!("usage: pdf-translate --layout <file.pdf> [page]");
+        std::process::exit(2);
+    };
+    let page: usize = args.get(3).and_then(|page| page.parse().ok()).unwrap_or(0);
+    let mut renderer = open_pdf(path);
+    let count = renderer.page_count();
+    // Load the page and its neighbours, so a run that crosses a column or page break is whole.
+    let mut paragraphs: Vec<Option<Vec<paragraphs::Paragraph>>> = (0..count).map(|_| None).collect();
+    let mut layouts: Vec<Option<layout::PageLayout>> = (0..count).map(|_| None).collect();
+    for index in [page.saturating_sub(1), page, page + 1] {
+        if index >= count {
+            continue;
+        }
+        let text = page_text(&mut renderer, index);
+        let extracted = paragraphs::extract(&text);
+        layouts[index] = Some(layout::analyze(&text, &extracted));
+        paragraphs[index] = Some(extracted);
+    }
+    let Some(layout) = &layouts[page] else {
+        eprintln!("page {page} has no text");
+        std::process::exit(1);
+    };
+    let page_paragraphs: &[paragraphs::Paragraph] = paragraphs[page].as_deref().unwrap_or(&[]);
+    println!("page {page}: {} columns, {} regions, {} paragraphs", layout.columns.len(), layout.regions.len(), page_paragraphs.len());
+    for (index, column) in layout.columns.iter().enumerate() {
+        println!("  column {}: x {:.1}..{:.1}, text y {:.1}..{:.1}", index + 1, column.x0, column.x1, column.top, column.bottom);
+    }
+    for (index, region) in layout.regions.iter().enumerate() {
+        let column = region.column.map_or_else(|| "spanning".to_string(), |column| (column + 1).to_string());
+        let opening = if region.opens_column { " opens-column" } else { "" };
+        println!(
+            "  region {}: column {column}{opening}, paragraphs {}..{}, box=[{:.1}, {:.1}, {:.1}, {:.1}]",
+            index + 1,
+            region.paragraphs.start,
+            region.paragraphs.end,
+            region.rect[0],
+            region.rect[1],
+            region.rect[2],
+            region.rect[3]
+        );
+    }
+    let mut loaded: Vec<layout::LoadedPage> = vec![None; count];
+    for (index, slot) in loaded.iter_mut().enumerate() {
+        if let (Some(page_paragraphs), Some(page_layout)) = (&paragraphs[index], &layouts[index]) {
+            *slot = Some((page_paragraphs, page_layout));
+        }
+    }
+    for (index, paragraph) in page_paragraphs.iter().enumerate() {
+        let run = layout::sentence_run(&loaded, page, index);
+        if run.len() > 1 {
+            let refs: Vec<&paragraphs::Paragraph> = run.iter().filter_map(|(page, index)| paragraphs.get(*page)?.as_ref()?.get(*index)).collect();
+            let text = paragraphs::join_paragraph_text(&refs);
+            let excerpt: String = text.chars().take(96).collect();
+            println!("  run #{index} ({:?}) spans {} paragraphs: {excerpt}…", paragraph.kind, run.len());
+        }
     }
     Ok(())
 }

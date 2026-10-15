@@ -12,7 +12,8 @@ use egui::{
 use crate::pdf::{inspect, DocInfo, OutlineItem, RenderConfig};
 
 use crate::icons;
-use crate::paragraphs::Paragraph;
+use crate::layout::{self, PageLayout as PageRegions};
+use crate::paragraphs::{self, Kind, Paragraph};
 use crate::render::{PageSlot, RenderClient};
 use crate::store::{Job, Stage, Store, Update, Worker};
 use crate::theme::{self, ThemeKind, ThemePreference, Tokens};
@@ -39,10 +40,12 @@ const CARD_PADDING: f32 = 16.0;
 /// Padding inside the small chip, and the width its spinner takes before the label.
 const CHIP_PADDING: f32 = 11.0;
 const CHIP_SPINNER: f32 = 18.0;
-/// PdfCraft's selection blue, laid over the text without hiding it.
-fn hover_fill() -> Color32 {
-    Color32::from_rgba_unmultiplied(0x3A, 0x7B, 0xF0, 70)
+/// The mark on the paragraph(s) a click would translate: the same margin bar a translated
+/// paragraph carries, in a second colour, so "done" and "about to be done" never look alike.
+fn pending_bar() -> Color32 {
+    Color32::from_rgb(0xE0, 0x8A, 0x1B)
 }
+
 const LANGUAGES: &[(&str, &str)] = &[
     ("en", "English"),
     ("de", "Deutsch"),
@@ -180,8 +183,13 @@ struct PageGeom {
     /// page beside it.
     column: Rect,
     paragraphs: Vec<Rect>,
+    /// For each paragraph, the store key of the sentence it belongs to (across pages too).
+    keys: Vec<String>,
+    /// Whether the paragraph opens its sentence: the first paragraph of the run.
+    opens_run: Vec<bool>,
+    /// Whether the sentence already has a translation, one flag per paragraph.
+    translated: Vec<bool>,
 }
-
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RightPanel {
@@ -201,6 +209,7 @@ enum Cmd {
     Panel(RightPanel),
     Theme(ThemePreference),
     ClearTranslations,
+    ToggleLayout,
     Shortcuts,
 }
 
@@ -253,6 +262,8 @@ pub struct App {
     /// A zoom the chrome asked for (buttons, menu, shortcuts); applied in the viewer,
     /// where the pages' rectangles are known, so the view can keep its place.
     pending_zoom: Option<f32>,
+    /// Debug overlay: draw each page's columns and text regions.
+    debug_layout: bool,
 }
 
 impl App {
@@ -287,6 +298,7 @@ impl App {
             shortcuts: false,
             fit_width: false,
             pending_zoom: None,
+            debug_layout: false,
         };
         // Files named on the command line win; otherwise reopen the last session's documents.
         let named: Vec<PathBuf> = std::env::args().skip(1).map(PathBuf::from).filter(|path| path.is_file()).collect();
@@ -552,6 +564,10 @@ impl App {
                 }
                 self.toast("Translations cleared");
             }
+            Cmd::ToggleLayout => {
+                self.debug_layout = !self.debug_layout;
+                self.toast(if self.debug_layout { "Page layout shown" } else { "Page layout hidden" });
+            }
             Cmd::Shortcuts => self.shortcuts = true,
         }
     }
@@ -570,6 +586,7 @@ impl App {
             Command { label: "Light gray theme", detail: "Theme", icon: "sun", cmd: Cmd::Theme(ThemePreference::Light) },
             Command { label: "Dark gray theme", detail: "Theme", icon: "moon", cmd: Cmd::Theme(ThemePreference::Dark) },
             Command { label: "Use system theme", detail: "Theme", icon: "settings", cmd: Cmd::Theme(ThemePreference::System) },
+            Command { label: "Show the page layout", detail: "Debug", icon: "layout", cmd: Cmd::ToggleLayout },
             Command { label: "Keyboard shortcuts", detail: "Help", icon: "circle-help", cmd: Cmd::Shortcuts },
         ];
         if self.active.is_some() {
@@ -681,6 +698,10 @@ impl App {
                         ui.add_space(2.0);
                         self.language_button(ui);
                         ui.add_space(8.0);
+                        if icons::button(ui, "layout", 32.0, self.debug_layout, "Page layout (Ctrl+Shift+L)").clicked() {
+                            self.debug_layout = !self.debug_layout;
+                        }
+                        ui.add_space(6.0);
                         if icons::button(ui, "zoom-in", 32.0, false, "Zoom in (Ctrl++)").clicked() {
                             self.zoom_step(true);
                         }
@@ -1143,14 +1164,30 @@ impl App {
                 }
                 painter.rect_stroke(page_rect, CornerRadius::ZERO, Stroke::new(0.5, t.border.gamma_multiply(0.8)), StrokeKind::Outside);
 
+                if self.debug_layout {
+                    if let Some(layout) = &doc.client.slots[page].layout {
+                        draw_layout(&painter, page_rect, zoom, layout, doc.client.slots[page].paragraphs.as_deref().unwrap_or(&[]));
+                    }
+                }
+
                 let mut paragraph_rects = Vec::new();
+                let mut paragraph_keys: Vec<String> = Vec::new();
+                let mut paragraph_opens: Vec<bool> = Vec::new();
+                let mut paragraph_translated: Vec<bool> = Vec::new();
                 if let Some(paragraphs) = &doc.client.slots[page].paragraphs {
+                    // One store lookup per sentence, shared by every paragraph of the run.
+                    let mut cache: HashMap<String, bool> = HashMap::new();
                     for (index, paragraph) in paragraphs.iter().enumerate() {
                         let rect = to_screen(page_rect.min, zoom, paragraph.rect);
                         paragraph_rects.push(rect);
-                        let translated = doc.store.lock().map(|store| store.get(&paragraph.key()).is_some()).unwrap_or(false);
+                        let run = sentence_run(doc, page, index);
+                        let key = run_key(doc, &run);
+                        let translated = *cache.entry(key.clone()).or_insert_with(|| doc.store.lock().map(|store| store.get(&key).is_some()).unwrap_or(false));
+                        paragraph_opens.push(run.first() == Some(&(page, index)));
+                        paragraph_keys.push(key);
+                        paragraph_translated.push(translated);
                         if translated {
-                            // A translated paragraph is marked by the accent bar only, so the mark
+                            // A translated sentence is marked by the accent bar only, so the mark
                             // can never be mistaken for the hover selection.
                             painter.rect_filled(Rect::from_min_size(Pos2::new(rect.left() - 5.0, rect.top()), Vec2::new(3.0, rect.height())), 1.5, t.accent);
                         }
@@ -1159,14 +1196,40 @@ impl App {
                         }
                     }
                 }
-                geoms.push(PageGeom { page, band: band_rect, page_rect, column, paragraphs: paragraph_rects });
+                geoms.push(PageGeom { page, band: band_rect, page_rect, column, paragraphs: paragraph_rects, keys: paragraph_keys, opens_run: paragraph_opens, translated: paragraph_translated });
             }
 
-            if let Some((page, index)) = hovered {
-                if let Some(geom) = geoms.iter().find(|geom| geom.page == page) {
-                    if let Some(rect) = geom.paragraphs.get(index) {
-                        ui.painter_at(geom.band).rect_filled(*rect, 3.0, hover_fill());
+            // The sentence under the pointer — or the one whose card is open — is the unit a
+            // click would translate. It is marked by the margin bar only (the same bar a
+            // translated paragraph carries, in a second colour); the text itself is never
+            // filled over, so the sentence the reader is about to translate stays readable.
+            let selection = hovered.or(doc.active);
+            if let Some((page, index)) = selection {
+                if let Some(source) = geoms.iter().find(|geom| geom.page == page) {
+                    let key = source.keys.get(index).cloned();
+                    for geom in &geoms {
+                        for (slot, rect) in geom.paragraphs.iter().enumerate() {
+                            if geom.keys.get(slot) != key.as_ref() {
+                                continue;
+                            }
+                            if !geom.translated.get(slot).copied().unwrap_or(false) {
+                                ui.painter_at(geom.band).rect_filled(Rect::from_min_size(Pos2::new(rect.left() - 5.0, rect.top()), Vec2::new(3.0, rect.height())), 1.5, pending_bar());
+                            }
+                        }
                     }
+                }
+            }
+
+            // A sentence that runs past the page edge needs the neighbouring page's text layer,
+            // even when that page is not on screen. The request is answered on a later frame, so
+            // the run (and its mark) reaches across then.
+            if let Some((page, index)) = hovered {
+                let last = doc.client.slots.get(page).and_then(|slot| slot.paragraphs.as_ref()).map_or(0, Vec::len);
+                if index + 1 >= last && page + 1 < doc.client.slots.len() {
+                    doc.client.ensure_text(page + 1);
+                }
+                if index == 0 && page > 0 {
+                    doc.client.ensure_text(page - 1);
                 }
             }
 
@@ -1183,11 +1246,14 @@ impl App {
                 }
             }
 
-            // Requests in flight: a small chip beside every paragraph being translated.
+            // Requests in flight: a small chip beside every sentence being translated, at the
+            // first paragraph of the run it covers.
             for geom in &geoms {
-                let Some(paragraphs) = &doc.client.slots[geom.page].paragraphs else { continue };
-                for (index, paragraph) in paragraphs.iter().enumerate() {
-                    let Some(stage) = self.stages.get(&(doc.id, paragraph.key())) else { continue };
+                for (index, key) in geom.keys.iter().enumerate() {
+                    if !geom.opens_run.get(index).copied().unwrap_or(false) {
+                        continue;
+                    }
+                    let Some(stage) = self.stages.get(&(doc.id, key.clone())) else { continue };
                     if matches!(stage, Stage::Failed(_)) {
                         continue;
                     }
@@ -1201,12 +1267,19 @@ impl App {
             doc.card_rect = None;
             doc.chip_rect = None;
             if let Some((page, index)) = doc.active {
-                let paragraph = doc.client.slots.get(page).and_then(|slot| slot.paragraphs.as_ref()).and_then(|paragraphs| paragraphs.get(index)).cloned();
-                if let (Some(paragraph), Some(geom)) = (paragraph, geoms.iter().find(|geom| geom.page == page)) {
+                let paragraphs = doc.client.slots.get(page).and_then(|slot| slot.paragraphs.as_ref());
+                let paragraph = paragraphs.and_then(|paragraphs| paragraphs.get(index)).cloned();
+                if let (Some(mut paragraph), Some(geom)) = (paragraph, geoms.iter().find(|geom| geom.page == page)) {
                     if let Some(rect) = geom.paragraphs.get(index).copied() {
-                        let key = paragraph.key();
-                        let translation = doc.store.lock().ok().and_then(|store| store.get(&key).map(str::to_string));
-                        let running = self.stages.get(&(doc.id, key.clone())).is_some_and(|stage| !matches!(stage, Stage::Failed(_)));
+                        // The card reads the translation of the whole sentence the paragraph
+                        // belongs to, even when the pointer sits on a later fragment of it.
+                        let key = geom.keys.get(index).cloned();
+                        if key.is_some() {
+                            let run = sentence_run(doc, page, index);
+                            paragraph.text = run_text(doc, &run);
+                        }
+                        let translation = key.as_ref().and_then(|key| doc.store.lock().ok().and_then(|store| store.get(key).map(str::to_string)));
+                        let running = key.as_ref().is_some_and(|key| self.stages.get(&(doc.id, key.clone())).is_some_and(|stage| !matches!(stage, Stage::Failed(_))));
                         if let Some(translation) = translation {
                             // Reading a translation: the card, in the paragraph's own format.
                             let card_rect =
@@ -1214,12 +1287,12 @@ impl App {
                             doc.card_rect = Some(card_rect);
                             doc.card_rects.push(card_rect);
                         } else if !running {
-                            // Nothing to read yet: only a chip that asks for a translation.
-                            let label = match self.stages.get(&(doc.id, key.clone())) {
-                                Some(Stage::Failed(_)) => "Translation failed — click to retry",
-                                _ => "Click to translate",
-                            };
-                            doc.chip_rect = Some(draw_chip(ui, geom.column, rect, label, false, &t));
+                            // Nothing to read yet. A failed request still offers a retry; a
+                            // paragraph that was never asked for shows no prompt.
+                            let failed = key.as_ref().is_some_and(|key| matches!(self.stages.get(&(doc.id, key.clone())), Some(Stage::Failed(_))));
+                            if failed {
+                                doc.chip_rect = Some(draw_chip(ui, geom.column, rect, "Translation failed — click to retry", false, &t));
+                            }
                         }
                     }
                 }
@@ -1242,11 +1315,11 @@ impl App {
                     };
                     if let Some(hit) = hit {
                         doc.active = Some(hit);
-                        let paragraph = doc.client.slots[hit.0].paragraphs.as_ref().and_then(|paragraphs| paragraphs.get(hit.1)).cloned();
-                        if let Some(paragraph) = paragraph {
-                            let key = paragraph.key();
-                            self.request(doc, key, paragraph.text.clone(), hit.0);
-                        }
+                        // Translate the whole sentence the clicked paragraph belongs to.
+                        let run = sentence_run(doc, hit.0, hit.1);
+                        let text = run_text(doc, &run);
+                        let key = paragraphs::content_key(&text);
+                        self.request(doc, key, text, hit.0);
                     }
                 }
             }
@@ -1322,6 +1395,9 @@ impl eframe::App for App {
         }
         if command && ctx.input(|input| input.key_pressed(egui::Key::Num2)) {
             self.fit_width = true;
+        }
+        if command && ctx.input(|input| input.modifiers.shift) && ctx.input(|input| input.key_pressed(egui::Key::L)) {
+            self.debug_layout = !self.debug_layout;
         }
         // Page Down / Page Up turn the page (a spread in two-page view) and Home / End go to
         // the first and last page, as in Acrobat. Only a text field (the page box, the palette,
@@ -1455,14 +1531,14 @@ fn translations_panel(ui: &mut egui::Ui, doc: &mut Doc, filter: &mut String) {
         })
         .collect();
     let count = if query.is_empty() {
-        format!("{} paragraph{} translated", entries.len(), if entries.len() == 1 { "" } else { "s" })
+        format!("{} sentence{} translated", entries.len(), if entries.len() == 1 { "" } else { "s" })
     } else {
         format!("{} of {}", matching.len(), entries.len())
     };
     ui.label(RichText::new(count).font(theme::regular(11.5)).color(t.text_faint));
     ui.add_space(6.0);
     if matching.is_empty() {
-        let empty = if entries.is_empty() { "Nothing translated yet. Hover a paragraph and click to translate it." } else { "No translation matches the filter." };
+        let empty = if entries.is_empty() { "Nothing translated yet. Hover a sentence and click to translate it." } else { "No translation matches the filter." };
         ui.label(RichText::new(empty).weak());
         return;
     }
@@ -1538,9 +1614,53 @@ fn log_panel(ui: &mut egui::Ui, worker: Option<&Worker>) {
     });
 }
 
-/// The page a translated paragraph sits on, among the pages whose text is loaded.
+/// The loaded paragraphs of a page.
+fn page_paragraphs(doc: &Doc, page: usize) -> Option<&[Paragraph]> {
+    doc.client.slots.get(page)?.paragraphs.as_deref()
+}
+
+/// The paragraph at `(page, index)`, when the page's text layer has loaded.
+fn paragraph_at(doc: &Doc, page: usize, index: usize) -> Option<&Paragraph> {
+    page_paragraphs(doc, page)?.get(index)
+}
+
+/// The loaded pages of a document, as the sentence walk wants them.
+fn loaded_pages(doc: &Doc) -> Vec<layout::LoadedPage<'_>> {
+    doc.client.slots.iter().map(|slot| Some((slot.paragraphs.as_deref()?, slot.layout.as_ref()?))).collect()
+}
+
+/// The sentence a paragraph belongs to, across column and page boundaries.
+fn sentence_run(doc: &Doc, page: usize, index: usize) -> Vec<(usize, usize)> {
+    layout::sentence_run(&loaded_pages(doc), page, index)
+}
+
+/// The text of a sentence run, joined the way a paragraph's own lines are joined.
+fn run_text(doc: &Doc, run: &[(usize, usize)]) -> String {
+    // A run that is one contiguous stretch of one page reuses the page-local joiner.
+    if let (Some(&(page, first)), Some(&(last_page, last))) = (run.first(), run.last()) {
+        if page == last_page && last.saturating_sub(first) + 1 == run.len() {
+            if let Some(paragraphs) = page_paragraphs(doc, page) {
+                if last < paragraphs.len() {
+                    return paragraphs::span_text(paragraphs, (first, last));
+                }
+            }
+        }
+    }
+    let refs: Vec<&Paragraph> = run.iter().filter_map(|&(page, index)| paragraph_at(doc, page, index)).collect();
+    paragraphs::join_paragraph_text(&refs)
+}
+
+/// The store key of a sentence run: the hash of its normalised text.
+fn run_key(doc: &Doc, run: &[(usize, usize)]) -> String {
+    paragraphs::content_key(&run_text(doc, run))
+}
+
+/// The page a translated sentence sits on, among the pages whose text is loaded.
 fn page_of_key(doc: &Doc, key: &str) -> Option<usize> {
-    doc.client.slots.iter().position(|slot| slot.paragraphs.as_ref().is_some_and(|paragraphs| paragraphs.iter().any(|paragraph| paragraph.key() == key)))
+    (0..doc.client.slots.len()).find(|page| {
+        let Some(paragraphs) = page_paragraphs(doc, *page) else { return false };
+        (0..paragraphs.len()).any(|index| run_key(doc, &sentence_run(doc, *page, index)) == key)
+    })
 }
 
 
@@ -1629,6 +1749,70 @@ fn page_layout(info: &DocInfo, band: f32, zoom: f32) -> PageLayout {
 
 fn to_screen(origin: Pos2, zoom: f32, rect: [f32; 4]) -> Rect {
     Rect::from_min_max(origin + Vec2::new(rect[0] * zoom, rect[1] * zoom), origin + Vec2::new(rect[2] * zoom, rect[3] * zoom))
+}
+
+/// One colour per column, so a region's column is obvious in the debug overlay.
+fn column_color(index: usize) -> Color32 {
+    const COLORS: [Color32; 4] =
+        [Color32::from_rgb(0x1B, 0x63, 0xE0), Color32::from_rgb(0x0F, 0x9D, 0x6E), Color32::from_rgb(0xC0, 0x5A, 0x1B), Color32::from_rgb(0x8A, 0x3F, 0xC1)];
+    COLORS[index % COLORS.len()]
+}
+
+/// Draw the page-layout debugging overlay: the columns' geometry and the text regions they
+/// hold, so a mis-detected column or a region that should be one sentence can be seen at a
+/// glance. A region that spans columns (a headline, a caption) is drawn red.
+fn draw_layout(painter: &egui::Painter, page_rect: Rect, zoom: f32, layout: &PageRegions, paragraphs: &[Paragraph]) {
+    let span_color = Color32::from_rgb(0xD0, 0x2B, 0x2B);
+    // Columns: their edges over the whole page, and the extent of their text.
+    for (index, column) in layout.columns.iter().enumerate() {
+        let color = column_color(index);
+        let x0 = page_rect.left() + column.x0 * zoom;
+        let x1 = page_rect.left() + column.x1 * zoom;
+        let text = Rect::from_min_max(Pos2::new(x0, page_rect.top() + column.top * zoom), Pos2::new(x1, page_rect.top() + column.bottom * zoom));
+        painter.rect_filled(text, 0.0, color.gamma_multiply(0.10));
+        let edge = Stroke::new(1.0, color.gamma_multiply(0.8));
+        painter.line_segment([Pos2::new(x0, page_rect.top()), Pos2::new(x0, page_rect.bottom())], edge);
+        painter.line_segment([Pos2::new(x1, page_rect.top()), Pos2::new(x1, page_rect.bottom())], edge);
+        painter.text(
+            Pos2::new(x0 + 3.0, page_rect.top() + 3.0),
+            Align2::LEFT_TOP,
+            format!("C{}  x {:.0}–{:.0}  y {:.0}–{:.0}", index + 1, column.x0, column.x1, column.top, column.bottom),
+            theme::semibold(10.0),
+            color,
+        );
+    }
+    // Regions: a box each, labelled with its column and the paragraph run it holds.
+    for (index, region) in layout.regions.iter().enumerate() {
+        let rect = to_screen(page_rect.min, zoom, region.rect).expand(1.5);
+        let color = region.column.map_or(span_color, column_color);
+        painter.rect_stroke(rect, 2.0, Stroke::new(1.5, color), StrokeKind::Inside);
+        let label = match region.column {
+            Some(column) => format!("R{} C{} ¶{}–{}", index + 1, column + 1, region.paragraphs.start + 1, region.paragraphs.end),
+            None => format!("R{} span ¶{}–{}", index + 1, region.paragraphs.start + 1, region.paragraphs.end),
+        };
+        let galley = painter.layout_no_wrap(label, theme::regular(9.5), color);
+        let size = galley.size();
+        // Above the box, in the gap between regions, so the label never sits on the text.
+        let at = Pos2::new(rect.left() + 3.0, (rect.top() - size.y - 1.0).max(page_rect.top() + 1.0));
+        painter.rect_filled(Rect::from_min_size(at, size), 2.0, Color32::from_white_alpha(225));
+        painter.galley(at, galley, color);
+    }
+    // Each paragraph carries its reading-order number in its region's colour, so the run inside
+    // a region is easy to follow and a paragraph that belongs to the wrong region stands out.
+    for (index, paragraph) in paragraphs.iter().enumerate() {
+        let rect = to_screen(page_rect.min, zoom, paragraph.rect);
+        let color = match paragraph.kind {
+            Kind::Body => layout.region_of(index).and_then(|region| region.column).map_or(span_color, column_color),
+            Kind::Display => Color32::from_rgb(0x8A, 0x3F, 0xC1),
+            Kind::Caption => Color32::from_rgb(0x70, 0x70, 0x78),
+        };
+        // A thin box around the paragraphs that are not body text, so figure text stands apart
+        // from the article's flow.
+        if paragraph.kind != Kind::Body {
+            painter.rect_stroke(rect.expand(1.0), 2.0, Stroke::new(1.0, color), StrokeKind::Inside);
+        }
+        painter.text(Pos2::new(rect.left() - 2.0, rect.top() - 1.0), Align2::RIGHT_BOTTOM, (index + 1).to_string(), theme::regular(9.0), color);
+    }
 }
 
 fn hit_test(geoms: &[PageGeom], slots: &[PageSlot], position: Pos2) -> Option<(usize, usize)> {

@@ -32,13 +32,15 @@ Inter typeface and Lucide icons — is PdfCraft's (`crates/ui-egui/src/theme.rs`
   leading, indentation and short last lines. A bold run-in heading and a line wrapped
   beside a drop cap stay with their paragraph; each paragraph keeps its box, type size
   and line spacing.
-* **Hover → translation** — the hovered paragraph is highlighted and its card is
-  shown **on the side of the paragraph that has the most room** (left or right of
+* **Hover → translation** — the sentence under the pointer (every paragraph of a run
+  that a column break cut in two) is marked in the margin and its card is shown **on the
+  side of the paragraph that has the most room** (left or right of
   the page). The translation is set at the paragraph's own size, leading and typeface
   family (serif, sans or mono, from the document's fonts), and a bold run-in heading
   such as *Müller:* stays bold — so it reads like the paragraph it translates.
-* **Marked when translated** — a translated paragraph carries an accent bar in the
-  margin, so you can see at a glance what is already done.
+* **Marked when translated** — a translated sentence carries an accent bar in the
+  margin; the sentence under the pointer, still to be translated, carries the same bar
+  in a second colour, so "done" and "about to be done" never look alike.
 * **PdfCraft's chrome** — tab strip, mode bar, tool rails and a pasteboard with white,
   shadowed pages; light, dark or system theme; and a command palette on Ctrl+K. The right
   rail opens a panel: **Outline** (click a bookmark to jump), **Translations** and
@@ -50,9 +52,16 @@ Inter typeface and Lucide icons — is PdfCraft's (`crates/ui-egui/src/theme.rs`
   use **Open…**); the tabs switch with a click or Ctrl+Tab, close with the `x` or
   Ctrl+W, and every one keeps its own place. The documents open at exit, and the page
   each was on, are restored the next time the app starts.
-* **Request one paragraph** — click a paragraph (or the *Translate this paragraph*
-  button on its card) to translate just that one. Nothing is translated until you
-  ask.
+* **Request one sentence** — click a paragraph to translate the sentence it belongs to. A
+  sentence that runs on past the paragraph break — into the paragraph below, or the one at
+  the top of the next column — is translated whole, not cut at the break. Nothing is
+  translated until you ask.
+* **Page layout, shown on demand** — the page's columns and the text region in each are
+  worked out from the text layer; **Ctrl+Shift+L** (or the layout button in the mode bar)
+  draws them over the page, so a column or a region that was read wrongly is visible at a
+  glance. The same model tells the selection where a sentence carries on: a paragraph at a
+  column top may continue the column before it, and the first paragraph of a page may
+  continue the last sentence of the page before.
 * **Live stage** — while a request runs, a small animated chip next to the
   paragraph says what is happening: `queued`, `loading the model…`, `translating…`.
   The same stage is shown inside the card.
@@ -123,6 +132,9 @@ first / last page · Esc close the palette.
 # list the paragraphs detected on a page (size, leading, box, text)
 pdf-translate --paragraphs document.pdf 0
 
+# list the columns and text regions the page layout found
+pdf-translate --layout document.pdf 0
+
 # list the page's lines in the reading order paragraphs are built from
 pdf-translate --lines document.pdf 0
 
@@ -154,9 +166,9 @@ document and target language, e.g.
 }
 ```
 
-Entries are keyed by a hash of the paragraph's normalised text, so a translated
-paragraph keeps its translation even if the document is re-opened or the paragraph
-grouping shifts slightly. The file name pins the document's canonical path, size
+Entries are keyed by a hash of the sentence's normalised text, so a translated
+sentence keeps its translation even if the document is re-opened or the line breaks
+shift slightly. The file name pins the document's canonical path, size
 and mtime, so replacing the PDF starts a fresh cache.
 
 The session — the documents open at exit and the page each was on — is kept with the
@@ -174,7 +186,8 @@ ten seconds while the app runs.
 | `src/widgets.rs` | mode tabs, ghost buttons, pills, search box, section titles |
 | `src/render.rs` | background page renderer (the `crate::pdf` pool, most urgent page first) |
 | `src/pdf/` | the hayro backend: render pool, glyph/text extraction, document inspection |
-| `src/paragraphs.rs` | reading-order lines → columns → paragraphs, content keys |
+| `src/paragraphs.rs` | reading-order lines → columns → paragraphs, kinds, content keys |
+| `src/layout.rs` | columns, text regions and the sentence walk that crosses columns and pages |
 | `src/typeface.rs` | the document's body family (serif/sans/mono) from its font names |
 | `src/store.rs` | translation cache + background translation worker |
 | `src/llm.rs` | local Qwen2.5 ONNX decoder (KV-cache loop) — adapted from `transcribe` |
@@ -209,9 +222,13 @@ numbered batches, which keeps a small model from drifting or summarising.
   start, and a line that runs across columns (a heading or a caption) only separates the
   columns it covers, so a column beside it keeps flowing and paragraphs never mix two
   columns.
-* Paragraph grouping is heuristic: dense tables of contents and slide decks merge
-  some lines; running headers, page numbers and equation numbers may show up as
-  paragraphs.
+* Paragraph grouping is heuristic: dense tables of contents and slide decks merge some
+  lines. Each paragraph is labelled **body**, **display** (a heading, a pull quote, a drop
+  cap) or **caption**, and page furniture — a running head, a folio, a section label, a
+  vertical photo credit — is dropped before the reader sees it (the debug overlay draws the
+  labels by colour, and `--paragraphs` prints them). Only body text carries a sentence, so a
+  caption, a pull quote or a figure between two body fragments of one sentence does not cut
+  the sentence in two; a dense infographic (page 62 here) can still merge unrelated labels.
 * The translation is set in the document's *family* (serif, sans or mono, inferred from
   the document's font names), not its exact embedded face: PDFs ship subset fonts whose
   programs cannot be reused for other text. Only the run-in heading is mirrored in bold;
