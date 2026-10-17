@@ -86,6 +86,10 @@ Inter typeface and Lucide icons — is PdfCraft's (`crates/ui-egui/src/theme.rs`
 * ONNX Runtime with the CUDA provider. On this machine the copy bundled with
   sherpa-onnx is used (`~/sherpa-onnx/.../lib/libonnxruntime.so`); it is found
   automatically. Override with `PDF_TRANSLATE_ORT_DIR`.
+  **On Windows** there is no such bundle, and the `onnxruntime.dll` that ships in
+  `C:\Windows\System32` is far too old for the models (it supports model IR 9,
+  they are IR 10). The runtime and the CUDA libraries it loads have to be put in
+  `ort/` once — see [doc/windows.md](doc/windows.md).
 * The Qwen2.5 ONNX models, reusing the transcribe folder
   `~/transcribe-models/onnx` (`qwen2-5-1-5b-q4f16`, `qwen2-5-3b-fp16`). Missing
   models are downloaded from Hugging Face on first use. Override the folder with
@@ -100,6 +104,10 @@ cargo run --release -- "/path/to/document.pdf" "/path/to/another.pdf"
 
 Open one or more PDFs on the command line; without a file argument the documents of
 the last session are reopened, and **Open…** (or Ctrl+O) picks another.
+
+On Windows, `tools\fetch-ort-windows.ps1` installs the ONNX Runtime and CUDA
+libraries into `ort\` and [doc/windows.md](doc/windows.md) walks through the
+rest of the setup (toolchain, GPU driver, models, troubleshooting).
 
 **Chrome.** The tab strip holds one tab per open document (click to switch, `x` or
 Ctrl+W to close); the mode bar has the **Menu**, the panel tabs (*Read · Outline ·
@@ -151,7 +159,8 @@ and the ONNX Runtime library directory.
 
 ## Cache
 
-`$XDG_CACHE_HOME/pdf-translate`, else `~/.cache/pdf-translate`. One file per
+`$XDG_CACHE_HOME/pdf-translate`, else `~/.cache/pdf-translate`
+(`%USERPROFILE%\.cache\pdf-translate` on Windows). One file per
 document and target language, e.g.
 `2304_07193v2-9aa388b6faab01b6-en.json`:
 
@@ -172,7 +181,8 @@ shift slightly. The file name pins the document's canonical path, size
 and mtime, so replacing the PDF starts a fresh cache.
 
 The session — the documents open at exit and the page each was on — is kept with the
-app's settings in eframe's storage (`~/.local/share/pdftranslate/app.ron`), and every
+app's settings in eframe's storage (`~/.local/share/pdftranslate/app.ron`, or
+`%APPDATA%\PDF Translate\data\app.ron` on Windows), and every
 ten seconds while the app runs.
 
 ## How it is built
@@ -192,6 +202,7 @@ ten seconds while the app runs.
 | `src/store.rs` | translation cache + background translation worker |
 | `src/llm.rs` | local Qwen2.5 ONNX decoder (KV-cache loop) — adapted from `transcribe` |
 | `tools/xctl.py` | tiny X11 helper used to script hover/click during development |
+| `tools/fetch-ort-windows.ps1` | fetches ONNX Runtime + CUDA/cuBLAS/cuFFT/cuDNN 9 into `ort/` on Windows |
 
 The interface icons are the official Lucide SVGs, embedded from the `lucide-static-svg`
 crate (ISC), and the interface typefaces are Inter and JetBrains Mono, embedded from the
