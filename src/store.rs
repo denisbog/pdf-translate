@@ -95,12 +95,23 @@ fn fnv(text: &str) -> u64 {
     hash
 }
 
+/// `$HOME`, or `%USERPROFILE%` when `HOME` is not set. A binary launched from
+/// Explorer (rather than from a shell) has no `HOME` on Windows, and falling
+/// back to a relative path would put downloads next to whatever the working
+/// directory happens to be.
+pub fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|dir| dir.is_absolute())
+        .or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from).filter(|dir| dir.is_absolute()))
+}
+
 /// `$XDG_CACHE_HOME/pdf-translate`, else `~/.cache/pdf-translate`.
 pub fn cache_dir() -> PathBuf {
     let base = std::env::var_os("XDG_CACHE_HOME")
         .map(PathBuf::from)
         .filter(|dir| dir.is_absolute())
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
+        .or_else(|| home_dir().map(|home| home.join(".cache")))
         .unwrap_or_else(|| PathBuf::from(".cache"));
     base.join("pdf-translate")
 }
@@ -184,7 +195,7 @@ pub fn models_dir() -> PathBuf {
     if let Some(dir) = std::env::var_os("PDF_TRANSLATE_MODELS") {
         return PathBuf::from(dir);
     }
-    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+    let home = home_dir().unwrap_or_default();
     home.join("transcribe-models/onnx")
 }
 
@@ -313,9 +324,10 @@ impl Worker {
                     if llm.is_none() {
                         notify(Update::Stage(job.doc, job.key.clone(), Stage::LoadingModel));
                         let runtime = llm::prepare_runtime();
-                        if let Some(dir) = runtime {
+                        let lib = llm::runtime_path().map(Path::to_path_buf).or(runtime);
+                        if let Some(lib) = lib {
                             if let Ok(mut log) = worker_log.lock() {
-                                log.push(format!("onnx runtime: {}", dir.display()));
+                                log.push(format!("onnx runtime: {}", lib.display()));
                             }
                         }
                         let mut sink = {
@@ -386,8 +398,8 @@ impl Worker {
 /// Used by `pdf-translate --translate …` for testing without the UI.
 pub fn translate_with_model(model: &str, text: &str, target: &str) -> Result<String, String> {
     let runtime = llm::prepare_runtime();
-    if let Some(dir) = runtime {
-        eprintln!("onnx runtime: {}", dir.display());
+    if let Some(lib) = llm::runtime_path().or(runtime.as_deref()) {
+        eprintln!("onnx runtime: {}", lib.display());
     }
     let mut llm = Llm::load(model, &models_dir(), true, &mut |message| eprintln!("{message}"))?;
     eprintln!("using {}", llm.summary());

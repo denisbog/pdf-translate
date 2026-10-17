@@ -180,6 +180,8 @@ impl Llm {
             let hint = if err.contains("DefaultLogger") {
                 " (ONNX Runtime's default logger is gone — something released the ORT \
                  environment; restart the app)"
+            } else if err.contains("which is missing") {
+                " (a CUDA library is missing from ONNX Runtime's folder — see doc/windows.md)"
             } else {
                 ""
             };
@@ -737,7 +739,13 @@ fn create_session(spec: &ModelSpec, models_dir: &Path, use_gpu: bool) -> Result<
                     // "Failed to allocate memory for requested buffer"
                     CUDA::default()
                         .with_arena_extend_strategy(ArenaExtendStrategy::SameAsRequested)
-                        .build(),
+                        .build()
+                        // without this a provider that cannot load (a missing
+                        // cuDNN/cuFFT DLL, an old driver) is skipped and the
+                        // session quietly runs on the CPU while the log still
+                        // says "on cuda" — the model then takes minutes per
+                        // paragraph instead of seconds
+                        .error_on_failure(),
                     // the CPU EP stays second in line: ONNX Runtime hands it the
                     // few nodes the CUDA provider does not implement
                     CPU::default().build(),
@@ -806,21 +814,25 @@ pub fn prepare_runtime() -> Option<PathBuf> {
         }
     }
     dirs.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("ort"));
-    if let Some(home) = std::env::var_os("HOME") {
+    if let Some(home) = crate::store::home_dir() {
         // the sherpa-onnx GPU bundle ships a CUDA enabled ONNX Runtime; using it
         // for speech recognition and the language model keeps one ORT in the
         // process (same soname, same CUDA provider)
-        dirs.push(PathBuf::from(&home).join("sherpa-onnx"));
+        dirs.push(home.join("sherpa-onnx"));
     }
     dirs.extend(cuda_library_dirs());
 
     for dir in &dirs {
-        let Some(lib) = find_library(dir, "libonnxruntime.so") else {
+        let Some(lib) = find_library(dir, ORT_LIBRARY) else {
             continue;
         };
 
         std::env::set_var("ORT_DYLIB_PATH", &lib);
-        preload(dir);
+        // The CUDA libraries and the provider DLL sit next to the runtime, not
+        // in the folder that was searched: `find_library` recurses, so `dir`
+        // may be an ancestor of `lib`'s own directory.
+        let lib_dir = lib.parent().unwrap_or(dir.as_path());
+        preload(lib_dir);
 
         // Load ONNX Runtime and create its environment *now*, once, on this
         // thread. Creating a session later without a registered default logger
@@ -858,6 +870,13 @@ pub fn prepare_runtime() -> Option<PathBuf> {
     None
 }
 
+/// File name of the ONNX Runtime shared library on this platform.
+const ORT_LIBRARY: &str = if cfg!(windows) {
+    "onnxruntime.dll"
+} else {
+    "libonnxruntime.so"
+};
+
 fn find_library(dir: &Path, name: &str) -> Option<PathBuf> {
     for candidate in [dir.join(name), dir.join("lib").join(name)] {
         if candidate.is_file() {
@@ -865,6 +884,7 @@ fn find_library(dir: &Path, name: &str) -> Option<PathBuf> {
         }
     }
     // onnxruntime-linux-x64-gpu_cudaXX-1.30.0/lib/libonnxruntime.so
+    // (or the .dll, on Windows)
     if let Ok(entries) = std::fs::read_dir(dir) {
         for entry in entries.flatten() {
             let path = entry.path();
@@ -891,6 +911,7 @@ fn find_library(dir: &Path, name: &str) -> Option<PathBuf> {
 /// here, so recognizer and language model share one ONNX Runtime — and one
 /// default logger, without which session creation fails with "Attempt to use
 /// DefaultLogger but none has been registered".
+#[cfg(unix)]
 fn adopt_loaded_runtime() -> Option<(PathBuf, String)> {
     use libloading::os::unix::{Library, Symbol};
 
@@ -926,8 +947,19 @@ fn adopt_loaded_runtime() -> Option<(PathBuf, String)> {
     Some((path, version))
 }
 
+/// Windows has no `RTLD_DEFAULT`: `GetProcAddress` only searches the module it
+/// is handed, so a runtime already linked into another DLL cannot be reached
+/// without enumerating the process's modules. Nothing needs it either — the
+/// runtime is loaded from `ort\` and its dependencies are reached through
+/// [`preload`].
+#[cfg(not(unix))]
+fn adopt_loaded_runtime() -> Option<(PathBuf, String)> {
+    None
+}
+
 /// File the loader mapped `address` from (used to report which library is in
 /// use); `dladdr` only looks up an address, it loads nothing.
+#[cfg(unix)]
 fn library_path(address: *const std::ffi::c_void) -> Option<PathBuf> {
     let mut info = std::mem::MaybeUninit::<libc::Dl_info>::uninit();
     if unsafe { libc::dladdr(address, info.as_mut_ptr()) } == 0 {
@@ -943,6 +975,7 @@ fn library_path(address: *const std::ffi::c_void) -> Option<PathBuf> {
 }
 
 /// Directories that may hold libcublas / libcudnn / libcudart.
+#[cfg(unix)]
 fn cuda_library_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
 
@@ -974,8 +1007,16 @@ fn cuda_library_dirs() -> Vec<PathBuf> {
     dirs
 }
 
+/// Windows has no CUDA library directories to scan: the DLLs sit next to
+/// `onnxruntime.dll` in `ort/` and are reached through [`preload`].
+#[cfg(not(unix))]
+fn cuda_library_dirs() -> Vec<PathBuf> {
+    Vec::new()
+}
+
 /// `dlopen(..., RTLD_GLOBAL)` for every CUDA library we can find, so the
 /// ONNX Runtime CUDA provider resolves them when it loads.
+#[cfg(unix)]
 fn preload(dir: &Path) {
     let mut candidates: Vec<PathBuf> = Vec::new();
     candidates.extend(cuda_library_dirs());
@@ -1008,6 +1049,31 @@ fn preload(dir: &Path) {
         }
     }
 }
+
+/// On Windows the loader resolves a DLL's dependencies through the
+/// executable's directory and `PATH` — not through the directory the DLL was
+/// loaded from. The CUDA runtime, `cuBLAS`, `cuDNN` and the provider DLL all
+/// sit next to `onnxruntime.dll`, so point the loader at that directory before
+/// any of them is loaded. (`SetDllDirectoryW` is process-wide and only affects
+/// later loads; the ONNX Runtime DLL itself is loaded by full path.)
+#[cfg(windows)]
+fn preload(dir: &Path) {
+    use std::os::windows::ffi::OsStrExt;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn SetDllDirectoryW(path: *const u16) -> i32;
+    }
+
+    let mut wide: Vec<u16> = dir.as_os_str().encode_wide().collect();
+    wide.push(0);
+    unsafe {
+        SetDllDirectoryW(wide.as_ptr());
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn preload(_dir: &Path) {}
 
 // -------------------------------------------------------------------- prompts
 
